@@ -2,6 +2,10 @@
 
 This module owns Simplicate transport quirks. Callers receive normalized domain
 objects and never need to know API ID prefixes or query syntax.
+
+Where possible the transport behaviour mirrors the previously working
+Antigravity implementation, especially around employee IDs, assignments and
+booked-hours filtering.
 """
 
 from __future__ import annotations
@@ -58,7 +62,12 @@ class SimplicateClient:
             offset += limit
 
     def get_projects(self) -> list[dict[str, Any]]:
-        return self._paged("projects/project")
+        """Return active Simplicate projects only."""
+        return [
+            project
+            for project in self._paged("projects/project")
+            if (project.get("project_status") or {}).get("label") != "tab_pclosed"
+        ]
 
     def get_services(self) -> list[dict[str, Any]]:
         return self._paged("projects/service")
@@ -67,31 +76,51 @@ class SimplicateClient:
         return self._paged("hours/hourstype")
 
     def get_assignments(self, start_date: str, end_date: str) -> list[dict[str, Any]]:
-        raw = self._paged("projects/assignment")
+        """Return assignments that are actually relevant to this employee/period.
+
+        Simplicate assignments expose their assigned people through the
+        ``employees`` array, not a singular ``employee`` field. This mirrors
+        the filtering behaviour of the previously working Antigravity client.
+        """
         employee = _plain_id(self.config.employee_id)
-        result: list[dict[str, Any]] = []
+        raw = self._paged("projects/assignment")
+
+        relevant: list[dict[str, Any]] = []
         for assignment in raw:
-            employee_id = _nested_id(assignment, "employee") or _plain_id(assignment.get("employee_id"))
-            if employee_id and employee_id != employee:
+            employees = assignment.get("employees") or []
+            belongs_to_employee = any(
+                _plain_id(person.get("id")) == employee
+                for person in employees
+                if isinstance(person, dict)
+            )
+            if not belongs_to_employee:
                 continue
-            if assignment.get("blocked") is True:
+
+            assignment_start = _date_part(assignment.get("start_date"))
+            assignment_end = _date_part(assignment.get("end_date"))
+
+            # Assignment must overlap the requested period. Missing end date
+            # means open-ended, as in the proven implementation.
+            if assignment_start and assignment_start > end_date:
                 continue
-            start = assignment.get("start_date") or assignment.get("start")
-            end = assignment.get("end_date") or assignment.get("end")
-            if start and start > end_date:
+            if assignment_end and assignment_end < start_date:
                 continue
-            if end and end < start_date:
+
+            if (assignment.get("status") or {}).get("is_blocked", False):
                 continue
-            result.append(_normalize_assignment(assignment))
-        return result
+
+            relevant.append(_normalize_assignment(assignment))
+
+        return relevant
 
     def get_booked_hours(self, start_date: str, end_date: str) -> list[dict[str, Any]]:
+        """Return booked hours for the configured employee and inclusive days."""
         return self._paged(
             "hours/hours",
             {
-                "q[employee.id]": _plain_id(self.config.employee_id),
-                "q[start_date][ge]": start_date,
-                "q[start_date][le]": end_date,
+                "q[employee.id]": _employee_id(self.config.employee_id),
+                "q[start_date][ge]": f"{start_date} 00:00:00",
+                "q[start_date][le]": f"{end_date} 23:59:59",
             },
         )
 
@@ -115,9 +144,14 @@ def _plain_id(value: Any) -> str | None:
     return text.split(":", 1)[1] if ":" in text else text
 
 
-def _nested_id(item: dict[str, Any], key: str) -> str | None:
-    value = item.get(key)
-    return _plain_id(value)
+def _employee_id(value: Any) -> str:
+    raw = _plain_id(value) or ""
+    return f"employee:{raw}"
+
+
+def _date_part(value: Any) -> str:
+    """Return the YYYY-MM-DD portion without teaching callers date quirks."""
+    return str(value or "")[:10]
 
 
 def _normalize_assignment(item: dict[str, Any]) -> dict[str, Any]:
@@ -125,14 +159,27 @@ def _normalize_assignment(item: dict[str, Any]) -> dict[str, Any]:
     service = item.get("projectservice") or item.get("service") or {}
     hour_type = item.get("type") or item.get("hourstype") or {}
     organization = item.get("organization") or item.get("customer") or {}
+
     return {
         "id": _plain_id(item.get("id")),
         "name": item.get("name") or item.get("title") or service.get("name"),
-        "customer": {"id": _plain_id(organization), "name": organization.get("name")} if isinstance(organization, dict) else None,
-        "project": {"id": _plain_id(project), "name": project.get("name")} if isinstance(project, dict) else None,
-        "task": {"id": _plain_id(service), "name": service.get("name")} if isinstance(service, dict) else None,
-        "hour_type": {"id": _plain_id(hour_type), "name": hour_type.get("name")} if isinstance(hour_type, dict) else None,
-        "start_date": item.get("start_date") or item.get("start"),
-        "end_date": item.get("end_date") or item.get("end"),
+        "customer": {
+            "id": _plain_id(organization),
+            "name": organization.get("name"),
+        } if isinstance(organization, dict) else None,
+        "project": {
+            "id": _plain_id(project),
+            "name": project.get("name"),
+        } if isinstance(project, dict) else None,
+        "task": {
+            "id": _plain_id(service),
+            "name": service.get("name"),
+        } if isinstance(service, dict) else None,
+        "hour_type": {
+            "id": _plain_id(hour_type),
+            "name": hour_type.get("name"),
+        } if isinstance(hour_type, dict) else None,
+        "start_date": item.get("start_date"),
+        "end_date": item.get("end_date"),
         "planned_hours": item.get("hours") or item.get("planned_hours"),
     }
