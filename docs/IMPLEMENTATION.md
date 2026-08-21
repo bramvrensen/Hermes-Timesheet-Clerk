@@ -2,12 +2,13 @@
 
 This document records implementation facts that are more concrete than the functional design. `DESIGN.md` remains the source of truth for intended behaviour.
 
-## 0.1.3 foundation
+## 0.1.4 foundation
 
 Implemented on `main`:
 
-- native HERMES plugin manifest and `register(ctx)` entry point;
-- native HERMES `requires_env` prerequisites for Clockify/Simplicate configuration;
+- native HERMES directory-plugin entrypoint through root `__init__.py` with `register(ctx)`;
+- canonical `ctx.register_tool(...)` usage with toolset, full model-facing schema and JSON-string handlers;
+- native HERMES plugin manifest and `requires_env` prerequisites for Clockify/Simplicate configuration;
 - bundled Timesheet Clerk skill registered through `ctx.register_skill(...)`;
 - plugin skill qualified name: `timesheet-clerk:timesheet-clerk`;
 - environment-based secret/config loading;
@@ -55,15 +56,18 @@ The plugin registers it explicitly during `register(ctx)`. Hermes namespaces plu
 timesheet-clerk:timesheet-clerk
 ```
 
-It should be discoverable through the normal skill tooling after the updated plugin has been pulled/reloaded.
+## Important compatibility finding
+
+Native directory plugins are discovered from a root `__init__.py` containing `register(ctx)`. A manifest `entrypoint: plugin.py` is not sufficient for the installed Hermes version. The repository therefore keeps `plugin.py` as the implementation module and exposes its `register` function from root `__init__.py`.
 
 ## Next validation step
 
-Reload/update the plugin in the actual HERMES environment and verify:
+Pull/reload v0.1.4 in the actual HERMES environment and verify:
 
 1. `timesheet-clerk:timesheet-clerk` is visible/loadable;
-2. `timesheet_clockify_entries` can read live Clockify data;
-3. `timesheet_simplicate_assignments` can read live Simplicate planning;
-4. normalized assignment shape matches the actual API response.
+2. the four `timesheet_*` tools are registered;
+3. `timesheet_clockify_entries` can read live Clockify data;
+4. `timesheet_simplicate_assignments` can read live Simplicate planning;
+5. normalized assignment shape matches the actual API response.
 
 The assignment booking write method remains intentionally unimplemented until the real Simplicate behaviour is verified.
