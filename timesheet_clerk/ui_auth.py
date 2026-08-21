@@ -27,6 +27,27 @@ def _controller() -> CookieController:
     return CookieController(key="timesheet-clerk-cookies")
 
 
+def _browser_cookie(name: str) -> str:
+    """Read a cookie from the initial browser request, with component fallback.
+
+    ``st.context.cookies`` is synchronous for the current browser session and is
+    therefore the reliable source after a full page refresh. The component
+    fallback remains useful inside an already-open Streamlit session after a
+    cookie has just been written.
+    """
+    try:
+        value = st.context.cookies.get(name)
+        if value:
+            return str(value)
+    except Exception:
+        pass
+
+    try:
+        return str(_controller().get(name) or "")
+    except Exception:
+        return ""
+
+
 def require_login() -> None:
     """Require UI authentication, restored from a signed browser cookie on refresh."""
     expected = _expected_password()
@@ -34,9 +55,8 @@ def require_login() -> None:
         st.error("TIMESHEET_CLERK_UI_PASSWORD is not configured.")
         st.stop()
 
-    controller = _controller()
     expected_token = _token(expected)
-    cookie_token = str(controller.get(_COOKIE_NAME) or "")
+    cookie_token = _browser_cookie(_COOKIE_NAME)
 
     if st.session_state.get("timesheet_authenticated") or hmac.compare_digest(cookie_token, expected_token):
         st.session_state["timesheet_authenticated"] = True
@@ -49,6 +69,7 @@ def require_login() -> None:
 
     if submit:
         if hmac.compare_digest(password, expected):
+            controller = _controller()
             controller.set(
                 _COOKIE_NAME,
                 expected_token,
