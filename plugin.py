@@ -64,7 +64,14 @@ def handle_simplicate_context(params: dict[str, Any], **kwargs: Any) -> str:
 
 def handle_simplicate_assignments(params: dict[str, Any], **kwargs: Any) -> str:
     del kwargs
-    return _safe(lambda: SimplicateClient(SimplicateConfig.from_env()).get_assignments(
+    return _safe(lambda: SimplicateClient(SimplicateConfig.from_env()).get_planned_assignments(
+        params["start_date"], params["end_date"]
+    ))
+
+
+def handle_simplicate_available_assignments(params: dict[str, Any], **kwargs: Any) -> str:
+    del kwargs
+    return _safe(lambda: SimplicateClient(SimplicateConfig.from_env()).get_available_assignments(
         params["start_date"], params["end_date"]
     ))
 
@@ -85,6 +92,13 @@ def _schema(name: str, description: str, properties: dict[str, Any], required: l
             "properties": properties,
             "required": required,
         },
+    }
+
+
+def _date_range_properties() -> dict[str, Any]:
+    return {
+        "start_date": {"type": "string", "description": "YYYY-MM-DD"},
+        "end_date": {"type": "string", "description": "YYYY-MM-DD"},
     }
 
 
@@ -116,11 +130,8 @@ def register(ctx) -> None:
         toolset=TOOLSET,
         schema=_schema(
             "timesheet_simplicate_context",
-            "Read Simplicate projects, tasks, hour types and assignments for planning.",
-            {
-                "start_date": {"type": "string", "description": "YYYY-MM-DD"},
-                "end_date": {"type": "string", "description": "YYYY-MM-DD"},
-            },
+            "Read Simplicate masterdata, planned assignments and available assignment override candidates for a period.",
+            _date_range_properties(),
             ["start_date", "end_date"],
         ),
         handler=handle_simplicate_context,
@@ -131,14 +142,23 @@ def register(ctx) -> None:
         toolset=TOOLSET,
         schema=_schema(
             "timesheet_simplicate_assignments",
-            "Read valid Simplicate assignments for the configured employee and period.",
-            {
-                "start_date": {"type": "string", "description": "YYYY-MM-DD"},
-                "end_date": {"type": "string", "description": "YYYY-MM-DD"},
-            },
+            "Read Simplicate assignments that represent actual planning for the employee and overlap the requested period. Undated assignments are excluded.",
+            _date_range_properties(),
             ["start_date", "end_date"],
         ),
         handler=handle_simplicate_assignments,
+    )
+
+    ctx.register_tool(
+        name="timesheet_simplicate_available_assignments",
+        toolset=TOOLSET,
+        schema=_schema(
+            "timesheet_simplicate_available_assignments",
+            "Read Simplicate assignments available as booking/override candidates for the employee and period, including undated assignments.",
+            _date_range_properties(),
+            ["start_date", "end_date"],
+        ),
+        handler=handle_simplicate_available_assignments,
     )
 
     ctx.register_tool(
@@ -147,10 +167,7 @@ def register(ctx) -> None:
         schema=_schema(
             "timesheet_simplicate_booked_hours",
             "Read already booked Simplicate hours for reconciliation.",
-            {
-                "start_date": {"type": "string", "description": "YYYY-MM-DD"},
-                "end_date": {"type": "string", "description": "YYYY-MM-DD"},
-            },
+            _date_range_properties(),
             ["start_date", "end_date"],
         ),
         handler=handle_simplicate_booked_hours,
