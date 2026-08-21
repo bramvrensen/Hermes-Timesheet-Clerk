@@ -1,4 +1,45 @@
+manifest_version: 2
+api_version: 1
 name: timesheet-clerk
-version: 0.1.0
+version: 0.1.1
 description: HERMES Timesheet Clerk tools for Clockify and Simplicate planning context.
 entrypoint: plugin.py
+author: Bram van Rensen
+homepage: https://github.com/bramvrensen/Hermes-Timesheet-Clerk
+tags: [timesheet, clockify, simplicate, productivity]
+
+provides_tools:
+  - timesheet_clockify_entries
+  - timesheet_simplicate_context
+  - timesheet_simplicate_assignments
+  - timesheet_simplicate_booked_hours
+
+python_dependencies:
+  - "requests>=2.32,<3"
+
+# Hermes prompts for missing values during `hermes plugins install`.
+# Secrets are stored through Hermes' normal profile/environment flow and never
+# written into this repository.
+requires_env:
+  - name: CLOCKIFY_API_KEY
+    description: Clockify personal API key
+    url: https://app.clockify.me/user/settings
+    secret: true
+  - name: CLOCKIFY_WORKSPACE_ID
+    description: Clockify workspace ID used for timesheet entries
+    secret: false
+  - name: CLOCKIFY_USER_ID
+    description: Clockify user ID whose time entries should be processed
+    secret: false
+  - name: SIMPLICATE_BASE_URL
+    description: Simplicate API v2 base URL, for example https://company.simplicate.nl/api/v2
+    secret: false
+  - name: SIMPLICATE_API_KEY
+    description: Simplicate API authentication key
+    secret: true
+  - name: SIMPLICATE_API_SECRET
+    description: Simplicate API authentication secret
+    secret: true
+  - name: SIMPLICATE_EMPLOYEE_ID
+    description: Simplicate employee ID for the user whose planning and hours are processed
+    secret: false
