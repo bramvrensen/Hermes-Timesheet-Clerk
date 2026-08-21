@@ -29,7 +29,6 @@ def utc_now() -> str:
 
 
 def validate_plan(plan: dict[str, Any]) -> dict[str, Any]:
-    """Return a defensive copy after validating the versioned plan contract."""
     if not isinstance(plan, dict):
         raise ContractError("plan must be an object")
     result = deepcopy(plan)
@@ -80,20 +79,29 @@ def validate_entry(entry: dict[str, Any], *, index: int | None = None) -> None:
     mode = entry.get("booking_mode")
     if mode not in BOOKING_MODES:
         raise ContractError(f"{prefix}.booking_mode must be assignment or direct")
-    if mode == "assignment":
-        target = entry.get("assignment")
-        if not isinstance(target, dict) or not str(target.get("id") or "").strip():
-            raise ContractError(f"{prefix}.assignment.id is required for assignment mode")
-    else:
-        target = entry.get("direct_mapping")
-        if not isinstance(target, dict):
-            raise ContractError(f"{prefix}.direct_mapping is required for direct mode")
-        for key in ("project_id", "service_id", "hour_type_id"):
-            if not str(target.get(key) or "").strip():
-                raise ContractError(f"{prefix}.direct_mapping.{key} is required")
     tier = entry.get("tier") or entry.get("overall_tier")
     if tier not in ENTRY_TIERS:
         raise ContractError(f"{prefix}.tier must be AUTO, PROPOSE or ASK")
+
+    # DRAFT/IN_REVIEW plans may deliberately contain unresolved targets for ASK
+    # or PROPOSE entries. AUTO entries and reviewed entries must be complete.
+    must_be_complete = tier == "AUTO" or entry.get("review_state") in {"confirmed", "corrected"}
+    if mode == "assignment":
+        target = entry.get("assignment")
+        if target is not None and not isinstance(target, dict):
+            raise ContractError(f"{prefix}.assignment must be an object")
+        if must_be_complete and (not isinstance(target, dict) or not str(target.get("id") or "").strip()):
+            raise ContractError(f"{prefix}.assignment.id is required for a resolved assignment entry")
+    else:
+        target = entry.get("direct_mapping")
+        if target is not None and not isinstance(target, dict):
+            raise ContractError(f"{prefix}.direct_mapping must be an object")
+        if must_be_complete:
+            if not isinstance(target, dict):
+                raise ContractError(f"{prefix}.direct_mapping is required for a resolved direct entry")
+            for key in ("project_id", "service_id", "hour_type_id"):
+                if not str(target.get(key) or "").strip():
+                    raise ContractError(f"{prefix}.direct_mapping.{key} is required for a resolved direct entry")
 
 
 def validate_feedback_event(event: dict[str, Any]) -> dict[str, Any]:
@@ -110,7 +118,6 @@ def validate_feedback_event(event: dict[str, Any]) -> dict[str, Any]:
 
 
 def new_plan_skeleton(*, plan_id: str, monday: str, sunday: str, target_hours: float = 36.0) -> dict[str, Any]:
-    """Create an empty plan shell for an agent to populate."""
     return {
         "schema_version": PLAN_SCHEMA_VERSION,
         "plan_id": plan_id,
