@@ -5,7 +5,8 @@ objects and never need to know API ID prefixes or query syntax.
 
 Where possible the transport behaviour mirrors the previously working
 Antigravity implementation, especially around employee IDs, assignments and
-booked-hours filtering.
+booked-hours filtering. Assignment normalization below is based on the live
+Simplicate tenant response validated on 2026-08-21.
 """
 
 from __future__ import annotations
@@ -66,7 +67,7 @@ class SimplicateClient:
         return [
             project
             for project in self._paged("projects/project")
-            if (project.get("project_status") or {}).get("label") != "tab_pclosed"
+            if not _project_is_closed(project)
         ]
 
     def get_services(self) -> list[dict[str, Any]]:
@@ -76,43 +77,34 @@ class SimplicateClient:
         return self._paged("hours/hourstype")
 
     def debug_assignment_shapes(self, limit: int = 3) -> list[dict[str, Any]]:
-        """Return a small, safe projection of raw employee assignment records.
-
-        This exists only to validate tenant-specific Simplicate field shapes.
-        It intentionally excludes arbitrary/free-text fields and never returns
-        credentials. The output should be removed once normalization is proven.
-        """
+        """Temporary safe projection of raw assignment records for diagnostics."""
         rows: list[dict[str, Any]] = []
-        for assignment in self._employee_assignments()[: max(1, min(limit, 10))]:
+        for assignment in self._employee_assignments(include_done=True)[: max(1, min(limit, 10))]:
             rows.append({
                 "id": assignment.get("id"),
                 "name": assignment.get("name") or assignment.get("title"),
                 "start_date": assignment.get("start_date"),
                 "end_date": assignment.get("end_date"),
                 "hours": assignment.get("hours"),
-                "planned_hours": assignment.get("planned_hours"),
+                "hours_total": assignment.get("hours_total"),
+                "is_planned": assignment.get("is_planned"),
                 "status": assignment.get("status"),
                 "employees": assignment.get("employees"),
                 "project": assignment.get("project"),
-                "project_id": assignment.get("project_id"),
                 "projectservice": assignment.get("projectservice"),
-                "projectservice_id": assignment.get("projectservice_id"),
-                "service": assignment.get("service"),
-                "service_id": assignment.get("service_id"),
-                "type": assignment.get("type"),
-                "type_id": assignment.get("type_id"),
-                "hourstype": assignment.get("hourstype"),
-                "hourstype_id": assignment.get("hourstype_id"),
-                "organization": assignment.get("organization"),
-                "organization_id": assignment.get("organization_id"),
-                "customer": assignment.get("customer"),
-                "customer_id": assignment.get("customer_id"),
+                "projecthourstype": assignment.get("projecthourstype"),
+                "hours_type": assignment.get("hours_type"),
                 "raw_keys": sorted(assignment.keys()),
             })
         return rows
 
-    def _employee_assignments(self) -> list[dict[str, Any]]:
-        """Return non-blocked assignments linked to the configured employee."""
+    def _employee_assignments(self, *, include_done: bool = False) -> list[dict[str, Any]]:
+        """Return assignments linked to the configured employee.
+
+        Tenant-validated transport facts:
+        - employee membership is represented by ``employees[]``;
+        - blocked/done state lives under ``status``.
+        """
         employee = _plain_id(self.config.employee_id)
         relevant: list[dict[str, Any]] = []
 
@@ -125,41 +117,82 @@ class SimplicateClient:
             )
             if not belongs_to_employee:
                 continue
-            if (assignment.get("status") or {}).get("is_blocked", False):
+
+            status = assignment.get("status") or {}
+            if status.get("is_blocked", False):
                 continue
+            if status.get("is_done", False) and not include_done:
+                continue
+
             relevant.append(assignment)
 
         return relevant
 
     def get_planned_assignments(self, start_date: str, end_date: str) -> list[dict[str, Any]]:
+        """Return current planning assignments for the requested period."""
         planned: list[dict[str, Any]] = []
         for assignment in self._employee_assignments():
             assignment_start = _date_part(assignment.get("start_date"))
             assignment_end = _date_part(assignment.get("end_date"))
+
+            if not assignment.get("is_planned", False):
+                continue
             if not assignment_start or not assignment_end:
                 continue
             if assignment_start > end_date or assignment_end < start_date:
                 continue
+
             normalized = _normalize_assignment(assignment)
             normalized["planning_status"] = "planned"
             planned.append(normalized)
+
         return planned
 
-    def get_available_assignments(self, start_date: str, end_date: str) -> list[dict[str, Any]]:
-        available: list[dict[str, Any]] = []
+    def get_booking_assignments(self, start_date: str, end_date: str) -> list[dict[str, Any]]:
+        """Return credible assignment targets for manual/agent override.
+
+        An assignment is a booking candidate when it belongs to the employee,
+        is not blocked/done, is attached to an active project and exposes a
+        project service intended for resource planning. Dated assignments must
+        overlap the requested period; undated assignments may remain valid
+        booking targets but are never treated as planning evidence.
+        """
+        active_projects = {
+            _plain_id(project.get("id"))
+            for project in self.get_projects()
+        }
+        candidates: list[dict[str, Any]] = []
+
         for assignment in self._employee_assignments():
+            project = assignment.get("project") or {}
+            service = assignment.get("projectservice") or {}
+            project_id = _plain_id(project.get("id"))
+
+            if not project_id or project_id not in active_projects:
+                continue
+            if not isinstance(service, dict) or not service.get("id"):
+                continue
+            if service.get("use_in_resource_planner") is not True:
+                continue
+
             assignment_start = _date_part(assignment.get("start_date"))
             assignment_end = _date_part(assignment.get("end_date"))
             if assignment_start and assignment_start > end_date:
                 continue
             if assignment_end and assignment_end < start_date:
                 continue
+
             normalized = _normalize_assignment(assignment)
             normalized["planning_status"] = (
-                "planned" if assignment_start and assignment_end else "undated_available"
+                "planned" if assignment.get("is_planned", False) else "booking_candidate"
             )
-            available.append(normalized)
-        return available
+            candidates.append(normalized)
+
+        return candidates
+
+    def get_available_assignments(self, start_date: str, end_date: str) -> list[dict[str, Any]]:
+        """Deprecated alias retained for compatibility."""
+        return self.get_booking_assignments(start_date, end_date)
 
     def get_assignments(self, start_date: str, end_date: str) -> list[dict[str, Any]]:
         return self.get_planned_assignments(start_date, end_date)
@@ -176,13 +209,15 @@ class SimplicateClient:
 
     def get_context(self, start_date: str, end_date: str) -> dict[str, Any]:
         planned = self.get_planned_assignments(start_date, end_date)
-        available = self.get_available_assignments(start_date, end_date)
+        booking = self.get_booking_assignments(start_date, end_date)
         return {
             "projects": self.get_projects(),
             "services": self.get_services(),
             "hour_types": self.get_hour_types(),
             "planned_assignments": planned,
-            "available_assignments": available,
+            "booking_assignments": booking,
+            # Temporary compatibility aliases. New logic should use the names above.
+            "available_assignments": booking,
             "assignments": planned,
         }
 
@@ -207,32 +242,63 @@ def _date_part(value: Any) -> str:
     return str(value or "")[:10]
 
 
+def _project_is_closed(project: dict[str, Any]) -> bool:
+    status = project.get("project_status") or project.get("status") or {}
+    return status.get("label") == "tab_pclosed" or status.get("is_closed") is True
+
+
 def _normalize_assignment(item: dict[str, Any]) -> dict[str, Any]:
+    """Normalize the live tenant assignment shape to stable domain fields."""
     project = item.get("project") or {}
-    service = item.get("projectservice") or item.get("service") or {}
-    hour_type = item.get("type") or item.get("hourstype") or {}
-    organization = item.get("organization") or item.get("customer") or {}
+    organization = project.get("organization") or {}
+    service = item.get("projectservice") or {}
+    hour_type = item.get("projecthourstype") or item.get("hours_type") or {}
+    status = item.get("status") or {}
 
     return {
         "id": _plain_id(item.get("id")),
         "name": item.get("name") or item.get("title") or service.get("name"),
         "customer": {
-            "id": _plain_id(organization),
+            "id": _plain_id(organization.get("id")),
             "name": organization.get("name"),
-        } if isinstance(organization, dict) else None,
+        } if isinstance(organization, dict) and organization else None,
         "project": {
-            "id": _plain_id(project),
+            "id": _plain_id(project.get("id")),
             "name": project.get("name"),
-        } if isinstance(project, dict) else None,
+            "number": project.get("project_number"),
+        } if isinstance(project, dict) and project else None,
         "task": {
-            "id": _plain_id(service),
+            "id": _plain_id(service.get("id")),
             "name": service.get("name"),
-        } if isinstance(service, dict) else None,
+            "use_in_resource_planner": service.get("use_in_resource_planner"),
+        } if isinstance(service, dict) and service else None,
         "hour_type": {
-            "id": _plain_id(hour_type),
+            "id": _plain_id(hour_type.get("id")),
             "name": hour_type.get("name"),
-        } if isinstance(hour_type, dict) else None,
+        } if isinstance(hour_type, dict) and hour_type else None,
         "start_date": item.get("start_date"),
         "end_date": item.get("end_date"),
-        "planned_hours": item.get("hours") or item.get("planned_hours"),
+        "assignment_hours": item.get("hours"),
+        "assignment_hours_total": item.get("hours_total"),
+        "is_planned": bool(item.get("is_planned", False)),
+        "status": {
+            "id": _plain_id(status.get("id")),
+            "name": status.get("name"),
+            "is_done": bool(status.get("is_done", False)),
+            "is_blocked": bool(status.get("is_blocked", False)),
+        },
+        "display_label": _assignment_display_label(organization, project, item),
     }
+
+
+def _assignment_display_label(
+    organization: dict[str, Any],
+    project: dict[str, Any],
+    assignment: dict[str, Any],
+) -> str:
+    parts = [
+        organization.get("name") if isinstance(organization, dict) else None,
+        project.get("name") if isinstance(project, dict) else None,
+        assignment.get("name") or assignment.get("title"),
+    ]
+    return " · ".join(str(part) for part in parts if part)
