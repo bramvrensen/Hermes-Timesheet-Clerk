@@ -9,68 +9,79 @@ description: Prepare a reviewable weekly timesheet booking plan from Clockify an
 
 Prepare a deterministic, reviewable booking plan. Do not book hours while planning.
 
+All `timesheet_*` capabilities are HERMES tools, not skills or shell scripts. Use the tool directly or, when deferred, use `tool_search` / `tool_describe` / `tool_call`. Never fall back to direct REST calls or terminal scripts while the Timesheet Clerk toolset is available.
+
 The integration tools hide all Clockify/Simplicate transport details. Never reason about API prefixes, pagination, endpoint syntax, timezone workarounds or identifier formatting. Treat normalized tool output as the domain model.
 
 ## Planning workflow
 
-1. Determine the requested week/period and its local calendar dates.
-2. Read Clockify entries for the complete period.
-3. Read Simplicate context, planned assignments and already booked hours for the same period.
-4. Reconcile already booked work before proposing new bookings.
-5. For every unbooked Clockify entry, try **planned-assignment-first mapping**.
-6. If no suitable planned assignment can be determined, use other evidence and, where review/override requires it, consult validated booking assignments.
-7. Only when no suitable assignment should be used, fall back to direct customer → project → task → hour-type mapping.
-8. Build a sequential day plan. Never consolidate entries across calendar-day boundaries.
-9. Produce/update the versioned `booking_plan.json` contract. Do not call a booking/write capability during this workflow.
+1. Determine the requested week/period and local calendar dates.
+2. Read relevant prior evidence with `timesheet_learning_context`.
+3. Read Clockify entries for the complete period.
+4. Read Simplicate context, planned assignments and already booked hours for the same period.
+5. Reconcile already booked work before proposing new bookings.
+6. For every unbooked Clockify entry, try planned-assignment-first mapping.
+7. If no suitable planned assignment can be determined, use other evidence and validated booking assignments.
+8. Only when no suitable assignment should be used, fall back to direct customer → project → task → hour-type mapping.
+9. Build a sequential day plan. Never consolidate entries across calendar-day boundaries.
+10. Persist a brand-new revision-1 plan with `timesheet_plan_create`. Do not overwrite a plan already under review and do not call a Simplicate booking/write capability during plan generation.
+
+## booking_plan contract
+
+Every generated plan uses `schema_version: 1`, starts at `revision: 1` and `status: DRAFT`, and contains:
+
+- unique `plan_id`;
+- `generated_at`;
+- `week.monday` and `week.sunday`;
+- `contract_hours_default: 36.0`;
+- editable `target_hours` for this specific week;
+- `entries`;
+- `review_context` with normalized candidates needed by the deterministic review UI.
+
+`review_context` should contain the relevant normalized `booking_assignments` and, where direct override is possible, normalized `customers`, `projects`, `services` and `hour_types`. It is review data, not hidden reasoning. Do not put credentials, transport-prefixed IDs or private chain-of-thought in the plan.
+
+Each entry contains at minimum:
+
+- stable `entry_id`;
+- one or more `clockify_source_ids`;
+- `date`;
+- source context under `source` (description/project/client/tags);
+- `original_duration_seconds` and `planned_duration_seconds`;
+- `planned_start` and `planned_end` when a timeline is available;
+- `booking_mode`: `assignment` or `direct`;
+- `assignment` context for assignment mode, or `direct_mapping` for direct mode;
+- `tier`: `AUTO`, `PROPOSE` or `ASK`;
+- concise `mapping_source`, `field_tiers`, `why` and when useful `why_not_auto`;
+- reconciliation/review state where applicable.
+
+An unresolved ASK/PROPOSE entry may intentionally omit its final assignment/direct IDs so the user can resolve it in review. AUTO entries must be complete.
 
 ## Assignment-first policy
 
 A Simplicate assignment is the preferred booking target because it represents the employee/project/task/hour-type combination.
 
-Distinguish two concepts:
+Distinguish:
 
-- **planned assignments**: active assignments linked to the employee with `is_planned = true`, both start and end dates, and a period overlapping the requested dates. These are primary planning evidence;
-- **booking assignments**: active assignment records that are credible booking/override targets: employee linked, not blocked/done, active project, valid project service and `use_in_resource_planner = true`. Undated records may appear here but are never planning evidence by themselves.
+- planned assignments: active employee assignments with `is_planned = true`, both start and end dates, overlapping the requested date. These are primary planning evidence;
+- booking assignments: credible active booking/override targets. Undated records may appear here but are never planning evidence by themselves.
 
-When evaluating an entry:
+For an entry, first evaluate planned assignments for that entry date. If one reliable match exists, assignment mode is preferred. If multiple relevant planned assignments remain plausible, do not silently choose one for AUTO. Other booking assignments can support a proposal or override but their mere existence is weaker evidence. If no suitable assignment exists, use direct mapping.
 
-- first use planned assignments for the entry date;
-- never describe an undated booking assignment as planned for a specific day;
-- use Clockify client/project/description plus other permitted context to distinguish planned assignments;
-- an exact or strongly contextual planned-assignment match is stronger evidence than reconstructing a direct mapping;
-- if multiple relevant planned assignments remain plausible, do not silently choose one for AUTO;
-- if no planned assignment matches, a booking assignment may still be proposed when other evidence supports it, but its lack of planning evidence lowers autonomy;
-- if no suitable assignment exists, fall back to direct mapping.
-
-When an assignment is selected, its underlying customer/project/task/hour type are derived context, not independent choices.
+When an assignment is selected, its customer/project/task/hour type are derived context, not independent choices.
 
 ## Autonomy
 
-Use `AUTO`, `PROPOSE`, and `ASK` as review tiers.
+Use `AUTO`, `PROPOSE`, and `ASK`. Autonomy is evidence based. Confidence is a supporting signal, not a numeric business threshold.
 
-Autonomy is evidence based. Never apply rules such as "seen twice means AUTO". Confidence is a supporting signal, not a numeric business threshold.
-
-Evidence sources may include:
-
-- explicit user rules;
-- confirmed scoped rules;
-- exact precedents;
-- successful prior applications;
-- current Simplicate planned-assignment context;
-- Clockify client/project context;
-- semantic similarity.
-
-An undated booking assignment is not planning evidence by itself. Semantic similarity alone must not yield AUTO.
+Evidence may include explicit user rules, confirmed scoped rules, exact precedents, successful prior applications, current planned-assignment context, Clockify client/project context and semantic similarity. Semantic similarity alone must not yield AUTO. An undated booking assignment alone is not planning evidence.
 
 Conflicting evidence lowers autonomy. Missing or invalid masterdata blocks AUTO. If a relevant planned assignment exists but the correct assignment is ambiguous, the entry must not be AUTO.
 
-For PROPOSE/ASK, record a compact `why_not_auto` where useful. Do not expose private chain-of-thought. Use concise provenance such as `conflicting_rules`, `semantic_match_only`, `missing_masterdata`, `stale_precedent`, `new_client`, `booking_assignment_only`, or `low_match_specificity`.
+For PROPOSE/ASK, use compact provenance such as `conflicting_rules`, `semantic_match_only`, `missing_masterdata`, `stale_precedent`, `new_client`, `booking_assignment_only`, or `low_match_specificity`. Do not expose private chain-of-thought.
 
 ## Learning
 
-Review feedback is evidence, not an immediate global rule.
-
-Conceptual progression:
+Review feedback is evidence, not an immediate global rule:
 
 ```text
 feedback event → precedent → candidate rule → confirmed rule
@@ -78,18 +89,19 @@ feedback event → precedent → candidate rule → confirmed rule
        └──────── success/correction feedback ─┘
 ```
 
-Rules must be scoped. A generic description such as "Projectoverleg" must never become a global AUTO rule merely through repetition.
+Rules must be scoped. A generic description such as `Projectoverleg` must never become a global AUTO rule through repetition alone. A corrected AUTO decision is strong negative evidence. Degrade or deactivate the relevant inferred rule according to the evidence and current policy.
 
-A corrected AUTO decision is strong negative evidence. Degrade or deactivate the relevant inferred rule according to the available evidence.
+`timesheet_learning_context` returns append-only feedback plus current agent-derived rules. Read it before planning when prior behavior may be relevant. The storage layer never promotes or generalizes rules on its own.
 
 ## Week hours
 
-The default contractual week is 36 hours, but the plan has an editable `target_hours` for the specific week. Completeness checks use `target_hours`, not the default contract value.
+The default contractual week is 36 hours. Completeness checks use the plan's editable `target_hours`, never a hardcoded 36/40 hour threshold.
 
 ## Safety
 
-- Planning tools are read-only.
+- Planning/API-read tools and plan persistence are separate from Simplicate writes.
 - Never book during plan generation.
 - Never invent Simplicate IDs or assignments.
 - Never reinterpret a tool error as successful data.
 - If reconciliation is ambiguous, surface the conflict instead of marking an entry BOOKED.
+- Never overwrite a plan that is already in review; a new agent run creates a new `plan_id`.
