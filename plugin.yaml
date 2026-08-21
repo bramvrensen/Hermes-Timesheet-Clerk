@@ -1,0 +1,4 @@
+name: timesheet-clerk
+version: 0.1.0
+description: HERMES Timesheet Clerk tools for Clockify and Simplicate planning context.
+entrypoint: plugin.py
