@@ -75,18 +75,17 @@ class SimplicateClient:
     def get_hour_types(self) -> list[dict[str, Any]]:
         return self._paged("hours/hourstype")
 
-    def get_assignments(self, start_date: str, end_date: str) -> list[dict[str, Any]]:
-        """Return assignments that are actually relevant to this employee/period.
+    def _employee_assignments(self) -> list[dict[str, Any]]:
+        """Return non-blocked assignments linked to the configured employee.
 
-        Simplicate assignments expose their assigned people through the
-        ``employees`` array, not a singular ``employee`` field. This mirrors
-        the filtering behaviour of the previously working Antigravity client.
+        Simplicate exposes assignment membership through ``employees[]``.
+        This helper deliberately does not decide whether an assignment counts as
+        current planning; that distinction is made by the public methods below.
         """
         employee = _plain_id(self.config.employee_id)
-        raw = self._paged("projects/assignment")
-
         relevant: list[dict[str, Any]] = []
-        for assignment in raw:
+
+        for assignment in self._paged("projects/assignment"):
             employees = assignment.get("employees") or []
             belongs_to_employee = any(
                 _plain_id(person.get("id")) == employee
@@ -95,23 +94,69 @@ class SimplicateClient:
             )
             if not belongs_to_employee:
                 continue
+            if (assignment.get("status") or {}).get("is_blocked", False):
+                continue
+            relevant.append(assignment)
 
+        return relevant
+
+    def get_planned_assignments(self, start_date: str, end_date: str) -> list[dict[str, Any]]:
+        """Return assignments representing actual planning for the period.
+
+        A planned assignment must have both start and end dates and overlap the
+        requested interval. This matches Simplicate's own planning/facts model,
+        which excludes assignments without either boundary from assignment
+        planning facts.
+        """
+        planned: list[dict[str, Any]] = []
+        for assignment in self._employee_assignments():
             assignment_start = _date_part(assignment.get("start_date"))
             assignment_end = _date_part(assignment.get("end_date"))
 
-            # Assignment must overlap the requested period. Missing end date
-            # means open-ended, as in the proven implementation.
+            if not assignment_start or not assignment_end:
+                continue
+            if assignment_start > end_date or assignment_end < start_date:
+                continue
+
+            normalized = _normalize_assignment(assignment)
+            normalized["planning_status"] = "planned"
+            planned.append(normalized)
+
+        return planned
+
+    def get_available_assignments(self, start_date: str, end_date: str) -> list[dict[str, Any]]:
+        """Return assignments that may be valid booking targets for the period.
+
+        Undated assignments are included here because they can still represent
+        reusable booking targets. Dated assignments are only included when their
+        period overlaps the requested interval, because Simplicate validates
+        hour registrations against assignment date ranges.
+        """
+        available: list[dict[str, Any]] = []
+        for assignment in self._employee_assignments():
+            assignment_start = _date_part(assignment.get("start_date"))
+            assignment_end = _date_part(assignment.get("end_date"))
+
             if assignment_start and assignment_start > end_date:
                 continue
             if assignment_end and assignment_end < start_date:
                 continue
 
-            if (assignment.get("status") or {}).get("is_blocked", False):
-                continue
+            normalized = _normalize_assignment(assignment)
+            normalized["planning_status"] = (
+                "planned" if assignment_start and assignment_end else "undated_available"
+            )
+            available.append(normalized)
 
-            relevant.append(_normalize_assignment(assignment))
+        return available
 
-        return relevant
+    def get_assignments(self, start_date: str, end_date: str) -> list[dict[str, Any]]:
+        """Backward-compatible alias for planned assignments.
+
+        Agent-facing assignment lookup is planning-first. Consumers that need
+        override candidates should explicitly call ``get_available_assignments``.
+        """
+        return self.get_planned_assignments(start_date, end_date)
 
     def get_booked_hours(self, start_date: str, end_date: str) -> list[dict[str, Any]]:
         """Return booked hours for the configured employee and inclusive days."""
@@ -125,11 +170,17 @@ class SimplicateClient:
         )
 
     def get_context(self, start_date: str, end_date: str) -> dict[str, Any]:
+        planned = self.get_planned_assignments(start_date, end_date)
+        available = self.get_available_assignments(start_date, end_date)
         return {
             "projects": self.get_projects(),
             "services": self.get_services(),
             "hour_types": self.get_hour_types(),
-            "assignments": self.get_assignments(start_date, end_date),
+            "planned_assignments": planned,
+            "available_assignments": available,
+            # Compatibility field. Planning logic must treat this as planned,
+            # not as the complete set of override candidates.
+            "assignments": planned,
         }
 
 
