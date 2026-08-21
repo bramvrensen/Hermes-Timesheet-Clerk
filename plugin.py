@@ -10,7 +10,7 @@ from .timesheet_clerk.clockify import ClockifyClient
 from .timesheet_clerk.config import ClockifyConfig, ConfigError, SimplicateConfig
 from .timesheet_clerk.http import IntegrationError
 from .timesheet_clerk.simplicate import SimplicateClient
-
+from .timesheet_clerk.storage import PlanRepository
 
 PLUGIN_ROOT = Path(__file__).resolve().parent
 TIMESHEET_SKILL = PLUGIN_ROOT / "skills" / "productivity" / "timesheet-clerk" / "SKILL.md"
@@ -59,7 +59,6 @@ def handle_simplicate_booking_assignments(params: dict[str, Any], **kwargs: Any)
 
 
 def handle_simplicate_available_assignments(params: dict[str, Any], **kwargs: Any) -> str:
-    """Compatibility alias for pre-0.1.9 clients."""
     return handle_simplicate_booking_assignments(params, **kwargs)
 
 
@@ -72,6 +71,30 @@ def handle_simplicate_debug_assignments(params: dict[str, Any], **kwargs: Any) -
 def handle_simplicate_booked_hours(params: dict[str, Any], **kwargs: Any) -> str:
     del kwargs
     return _safe(lambda: SimplicateClient(SimplicateConfig.from_env()).get_booked_hours(params["start_date"], params["end_date"]))
+
+
+def handle_plan_create(params: dict[str, Any], **kwargs: Any) -> str:
+    del kwargs
+    return _safe(lambda: PlanRepository().create(params["plan"], make_active=True))
+
+
+def handle_plan_active(params: dict[str, Any], **kwargs: Any) -> str:
+    del params, kwargs
+    return _safe(lambda: PlanRepository().get_active())
+
+
+def handle_plan_list(params: dict[str, Any], **kwargs: Any) -> str:
+    del kwargs
+    return _safe(lambda: PlanRepository().list_plans(limit=int(params.get("limit", 20))))
+
+
+def handle_learning_context(params: dict[str, Any], **kwargs: Any) -> str:
+    del kwargs
+    repo = PlanRepository()
+    return _safe(lambda: {
+        "feedback_events": repo.feedback(limit=int(params.get("feedback_limit", 200))),
+        "rules": repo.read_rules(),
+    })
 
 
 def _schema(name: str, description: str, properties: dict[str, Any], required: list[str]) -> dict[str, Any]:
@@ -99,41 +122,60 @@ def register(ctx) -> None:
             "end": {"type": "string", "description": "ISO-8601 interval end"},
         }, ["start", "end"]), handler=handle_clockify_entries,
     )
-
     ctx.register_tool(
         name="timesheet_simplicate_context", toolset=TOOLSET,
         schema=_schema("timesheet_simplicate_context", "Read Simplicate masterdata, planned assignments and validated booking assignment candidates for a period.", _date_range_properties(), ["start_date", "end_date"]),
         handler=handle_simplicate_context,
     )
-
     ctx.register_tool(
         name="timesheet_simplicate_assignments", toolset=TOOLSET,
-        schema=_schema("timesheet_simplicate_assignments", "Read actual planned Simplicate assignments for the employee and requested period. Requires is_planned=true, active status and overlapping dates.", _date_range_properties(), ["start_date", "end_date"]),
+        schema=_schema("timesheet_simplicate_assignments", "Read actual planned Simplicate assignments for the employee and requested period.", _date_range_properties(), ["start_date", "end_date"]),
         handler=handle_simplicate_assignments,
     )
-
     ctx.register_tool(
         name="timesheet_simplicate_booking_assignments", toolset=TOOLSET,
-        schema=_schema("timesheet_simplicate_booking_assignments", "Read credible Simplicate assignment booking targets for the employee: active project, active assignment, valid project service and resource-planner service. Undated records are candidates, not planning evidence.", _date_range_properties(), ["start_date", "end_date"]),
+        schema=_schema("timesheet_simplicate_booking_assignments", "Read credible Simplicate assignment booking targets for the employee. Undated records are candidates, not planning evidence.", _date_range_properties(), ["start_date", "end_date"]),
         handler=handle_simplicate_booking_assignments,
     )
-
     ctx.register_tool(
         name="timesheet_simplicate_available_assignments", toolset=TOOLSET,
         schema=_schema("timesheet_simplicate_available_assignments", "DEPRECATED compatibility alias for timesheet_simplicate_booking_assignments.", _date_range_properties(), ["start_date", "end_date"]),
         handler=handle_simplicate_available_assignments,
     )
-
     ctx.register_tool(
         name="timesheet_simplicate_debug_assignments", toolset=TOOLSET,
-        schema=_schema("timesheet_simplicate_debug_assignments", "TEMPORARY DIAGNOSTIC: return a safe projection of a few raw Simplicate assignment records for field-shape validation. Do not use for mapping or booking decisions.", {
+        schema=_schema("timesheet_simplicate_debug_assignments", "TEMPORARY DIAGNOSTIC: return a safe projection of a few raw Simplicate assignment records.", {
             "limit": {"type": "integer", "minimum": 1, "maximum": 10, "description": "Number of records, default 3"}
-        }, []),
-        handler=handle_simplicate_debug_assignments,
+        }, []), handler=handle_simplicate_debug_assignments,
     )
-
     ctx.register_tool(
         name="timesheet_simplicate_booked_hours", toolset=TOOLSET,
         schema=_schema("timesheet_simplicate_booked_hours", "Read already booked Simplicate hours for reconciliation.", _date_range_properties(), ["start_date", "end_date"]),
         handler=handle_simplicate_booked_hours,
+    )
+    ctx.register_tool(
+        name="timesheet_plan_create", toolset=TOOLSET,
+        schema=_schema(
+            "timesheet_plan_create",
+            "Validate and atomically persist a new revision-1 booking plan as the active plan. The caller supplies all mapping and autonomy decisions; this tool does not infer them.",
+            {"plan": {"type": "object", "description": "Complete schema_version=1 booking plan"}},
+            ["plan"],
+        ), handler=handle_plan_create,
+    )
+    ctx.register_tool(
+        name="timesheet_plan_active", toolset=TOOLSET,
+        schema=_schema("timesheet_plan_active", "Read the currently active booking plan and exact revision.", {}, []),
+        handler=handle_plan_active,
+    )
+    ctx.register_tool(
+        name="timesheet_plan_list", toolset=TOOLSET,
+        schema=_schema("timesheet_plan_list", "List recent Timesheet Clerk plans and lifecycle state.", {
+            "limit": {"type": "integer", "minimum": 1, "maximum": 100, "description": "Maximum plans to return"}
+        }, []), handler=handle_plan_list,
+    )
+    ctx.register_tool(
+        name="timesheet_learning_context", toolset=TOOLSET,
+        schema=_schema("timesheet_learning_context", "Read append-only review feedback plus current agent-derived rules. Treat them as evidence according to the Timesheet Clerk skill.", {
+            "feedback_limit": {"type": "integer", "minimum": 1, "maximum": 1000, "description": "Most recent feedback events to return"}
+        }, []), handler=handle_learning_context,
     )
