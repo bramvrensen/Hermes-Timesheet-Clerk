@@ -6,10 +6,10 @@ import json
 from pathlib import Path
 from typing import Any, Callable
 
-from timesheet_clerk.clockify import ClockifyClient
-from timesheet_clerk.config import ClockifyConfig, ConfigError, SimplicateConfig
-from timesheet_clerk.http import IntegrationError
-from timesheet_clerk.simplicate import SimplicateClient
+from .timesheet_clerk.clockify import ClockifyClient
+from .timesheet_clerk.config import ClockifyConfig, ConfigError, SimplicateConfig
+from .timesheet_clerk.http import IntegrationError
+from .timesheet_clerk.simplicate import SimplicateClient
 
 
 PLUGIN_ROOT = Path(__file__).resolve().parent
