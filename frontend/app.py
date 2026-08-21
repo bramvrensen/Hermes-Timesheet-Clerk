@@ -8,11 +8,9 @@ LLM work itself.
 
 from __future__ import annotations
 
-import hmac
 import os
 import sys
 from copy import deepcopy
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -24,28 +22,14 @@ if str(ROOT) not in sys.path:
 
 from timesheet_clerk.review import apply_review, feedback_event
 from timesheet_clerk.storage import PlanNotFound, PlanRepository, StateConflict
+from timesheet_clerk.ui_auth import logout, require_login
 
 st.set_page_config(page_title="Timesheet Clerk", page_icon="⏱️", layout="wide")
 repo = PlanRepository()
 
 
 def _login() -> None:
-    expected = str(os.environ.get("TIMESHEET_CLERK_UI_PASSWORD") or "").strip()
-    if not expected:
-        st.error("TIMESHEET_CLERK_UI_PASSWORD is not configured.")
-        st.stop()
-    if st.session_state.get("timesheet_authenticated"):
-        return
-    st.title("Timesheet Clerk")
-    with st.form("login"):
-        password = st.text_input("Password", type="password")
-        submit = st.form_submit_button("Log in")
-    if submit:
-        if hmac.compare_digest(password, expected):
-            st.session_state["timesheet_authenticated"] = True
-            st.rerun()
-        st.error("Incorrect password")
-    st.stop()
+    require_login()
 
 
 def _hours(seconds: Any) -> float:
@@ -234,8 +218,7 @@ def main() -> None:
         st.title("Timesheet Clerk")
     with header_right:
         if st.button("Log out"):
-            st.session_state.clear()
-            st.rerun()
+            logout()
     try:
         plan = repo.get_active()
     except PlanNotFound:
