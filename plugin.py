@@ -1,9 +1,10 @@
-"""HERMES plugin entry point for Timesheet Clerk."""
+"""HERMES plugin implementation for Timesheet Clerk."""
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from timesheet_clerk.clockify import ClockifyClient
 from timesheet_clerk.config import ClockifyConfig, ConfigError, SimplicateConfig
@@ -13,54 +14,82 @@ from timesheet_clerk.simplicate import SimplicateClient
 
 PLUGIN_ROOT = Path(__file__).resolve().parent
 TIMESHEET_SKILL = PLUGIN_ROOT / "skills" / "timesheet-clerk" / "SKILL.md"
+TOOLSET = "timesheet_clerk"
 
 
-def _ok(data: Any) -> dict[str, Any]:
-    return {"ok": True, "data": data}
+def _ok(data: Any) -> str:
+    return json.dumps({"success": True, "data": data}, ensure_ascii=False, default=str)
 
 
-def _error(exc: Exception) -> dict[str, Any]:
+def _error(exc: Exception) -> str:
     if isinstance(exc, IntegrationError):
-        return exc.as_dict()
+        payload = exc.as_dict()
+        payload["success"] = False
+        return json.dumps(payload, ensure_ascii=False, default=str)
     if isinstance(exc, ConfigError):
-        return {"ok": False, "error_type": "configuration_error", "message": str(exc), "retryable": False}
-    return {"ok": False, "error_type": "unexpected_error", "message": str(exc), "retryable": False}
+        return json.dumps({
+            "success": False,
+            "error_type": "configuration_error",
+            "message": str(exc),
+            "retryable": False,
+        })
+    return json.dumps({
+        "success": False,
+        "error_type": "unexpected_error",
+        "message": str(exc),
+        "retryable": False,
+    })
 
 
-def clockify_time_entries(start: str, end: str) -> dict[str, Any]:
-    """Get normalized Clockify entries for an ISO-8601 interval."""
+def _safe(call: Callable[[], Any]) -> str:
     try:
-        return _ok(ClockifyClient(ClockifyConfig.from_env()).get_time_entries(start, end))
-    except Exception as exc:  # plugin boundary: always return structured JSON
-        return _error(exc)
-
-
-def simplicate_context(start_date: str, end_date: str) -> dict[str, Any]:
-    """Get Simplicate projects, tasks, hour types and employee assignments."""
-    try:
-        return _ok(SimplicateClient(SimplicateConfig.from_env()).get_context(start_date, end_date))
+        return _ok(call())
     except Exception as exc:
         return _error(exc)
 
 
-def simplicate_assignments(start_date: str, end_date: str) -> dict[str, Any]:
-    """Get normalized employee assignments valid for a date interval."""
-    try:
-        return _ok(SimplicateClient(SimplicateConfig.from_env()).get_assignments(start_date, end_date))
-    except Exception as exc:
-        return _error(exc)
+def handle_clockify_entries(params: dict[str, Any], **kwargs: Any) -> str:
+    del kwargs
+    return _safe(lambda: ClockifyClient(ClockifyConfig.from_env()).get_time_entries(
+        params["start"], params["end"]
+    ))
 
 
-def simplicate_booked_hours(start_date: str, end_date: str) -> dict[str, Any]:
-    """Get existing Simplicate hours for the configured employee."""
-    try:
-        return _ok(SimplicateClient(SimplicateConfig.from_env()).get_booked_hours(start_date, end_date))
-    except Exception as exc:
-        return _error(exc)
+def handle_simplicate_context(params: dict[str, Any], **kwargs: Any) -> str:
+    del kwargs
+    return _safe(lambda: SimplicateClient(SimplicateConfig.from_env()).get_context(
+        params["start_date"], params["end_date"]
+    ))
+
+
+def handle_simplicate_assignments(params: dict[str, Any], **kwargs: Any) -> str:
+    del kwargs
+    return _safe(lambda: SimplicateClient(SimplicateConfig.from_env()).get_assignments(
+        params["start_date"], params["end_date"]
+    ))
+
+
+def handle_simplicate_booked_hours(params: dict[str, Any], **kwargs: Any) -> str:
+    del kwargs
+    return _safe(lambda: SimplicateClient(SimplicateConfig.from_env()).get_booked_hours(
+        params["start_date"], params["end_date"]
+    ))
+
+
+def _schema(name: str, description: str, properties: dict[str, Any], required: list[str]) -> dict[str, Any]:
+    return {
+        "name": name,
+        "description": description,
+        "parameters": {
+            "type": "object",
+            "properties": properties,
+            "required": required,
+        },
+    }
 
 
 def register(ctx) -> None:
-    """Register Timesheet Clerk skill and read-only tools with HERMES."""
+    """Register the Timesheet Clerk skill and read-only planning tools."""
     ctx.register_skill(
         "timesheet-clerk",
         TIMESHEET_SKILL,
@@ -69,53 +98,60 @@ def register(ctx) -> None:
 
     ctx.register_tool(
         name="timesheet_clockify_entries",
-        description="Read normalized Clockify time entries for a requested interval.",
-        handler=clockify_time_entries,
-        parameters={
-            "type": "object",
-            "properties": {
+        toolset=TOOLSET,
+        schema=_schema(
+            "timesheet_clockify_entries",
+            "Read normalized Clockify time entries for a requested interval.",
+            {
                 "start": {"type": "string", "description": "ISO-8601 interval start"},
                 "end": {"type": "string", "description": "ISO-8601 interval end"},
             },
-            "required": ["start", "end"],
-        },
+            ["start", "end"],
+        ),
+        handler=handle_clockify_entries,
     )
+
     ctx.register_tool(
         name="timesheet_simplicate_context",
-        description="Read Simplicate projects, tasks, hour types and assignments for planning.",
-        handler=simplicate_context,
-        parameters={
-            "type": "object",
-            "properties": {
+        toolset=TOOLSET,
+        schema=_schema(
+            "timesheet_simplicate_context",
+            "Read Simplicate projects, tasks, hour types and assignments for planning.",
+            {
                 "start_date": {"type": "string", "description": "YYYY-MM-DD"},
                 "end_date": {"type": "string", "description": "YYYY-MM-DD"},
             },
-            "required": ["start_date", "end_date"],
-        },
+            ["start_date", "end_date"],
+        ),
+        handler=handle_simplicate_context,
     )
+
     ctx.register_tool(
         name="timesheet_simplicate_assignments",
-        description="Read valid Simplicate assignments for the configured employee and period.",
-        handler=simplicate_assignments,
-        parameters={
-            "type": "object",
-            "properties": {
-                "start_date": {"type": "string"},
-                "end_date": {"type": "string"},
+        toolset=TOOLSET,
+        schema=_schema(
+            "timesheet_simplicate_assignments",
+            "Read valid Simplicate assignments for the configured employee and period.",
+            {
+                "start_date": {"type": "string", "description": "YYYY-MM-DD"},
+                "end_date": {"type": "string", "description": "YYYY-MM-DD"},
             },
-            "required": ["start_date", "end_date"],
-        },
+            ["start_date", "end_date"],
+        ),
+        handler=handle_simplicate_assignments,
     )
+
     ctx.register_tool(
         name="timesheet_simplicate_booked_hours",
-        description="Read already booked Simplicate hours for reconciliation.",
-        handler=simplicate_booked_hours,
-        parameters={
-            "type": "object",
-            "properties": {
-                "start_date": {"type": "string"},
-                "end_date": {"type": "string"},
+        toolset=TOOLSET,
+        schema=_schema(
+            "timesheet_simplicate_booked_hours",
+            "Read already booked Simplicate hours for reconciliation.",
+            {
+                "start_date": {"type": "string", "description": "YYYY-MM-DD"},
+                "end_date": {"type": "string", "description": "YYYY-MM-DD"},
             },
-            "required": ["start_date", "end_date"],
-        },
+            ["start_date", "end_date"],
+        ),
+        handler=handle_simplicate_booked_hours,
     )
