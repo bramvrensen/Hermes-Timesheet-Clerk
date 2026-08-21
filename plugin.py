@@ -53,9 +53,14 @@ def handle_simplicate_assignments(params: dict[str, Any], **kwargs: Any) -> str:
     return _safe(lambda: SimplicateClient(SimplicateConfig.from_env()).get_planned_assignments(params["start_date"], params["end_date"]))
 
 
-def handle_simplicate_available_assignments(params: dict[str, Any], **kwargs: Any) -> str:
+def handle_simplicate_booking_assignments(params: dict[str, Any], **kwargs: Any) -> str:
     del kwargs
-    return _safe(lambda: SimplicateClient(SimplicateConfig.from_env()).get_available_assignments(params["start_date"], params["end_date"]))
+    return _safe(lambda: SimplicateClient(SimplicateConfig.from_env()).get_booking_assignments(params["start_date"], params["end_date"]))
+
+
+def handle_simplicate_available_assignments(params: dict[str, Any], **kwargs: Any) -> str:
+    """Compatibility alias for pre-0.1.9 clients."""
+    return handle_simplicate_booking_assignments(params, **kwargs)
 
 
 def handle_simplicate_debug_assignments(params: dict[str, Any], **kwargs: Any) -> str:
@@ -97,19 +102,25 @@ def register(ctx) -> None:
 
     ctx.register_tool(
         name="timesheet_simplicate_context", toolset=TOOLSET,
-        schema=_schema("timesheet_simplicate_context", "Read Simplicate masterdata, planned assignments and assignment override candidates for a period.", _date_range_properties(), ["start_date", "end_date"]),
+        schema=_schema("timesheet_simplicate_context", "Read Simplicate masterdata, planned assignments and validated booking assignment candidates for a period.", _date_range_properties(), ["start_date", "end_date"]),
         handler=handle_simplicate_context,
     )
 
     ctx.register_tool(
         name="timesheet_simplicate_assignments", toolset=TOOLSET,
-        schema=_schema("timesheet_simplicate_assignments", "Read Simplicate assignments that represent actual planning for the employee and overlap the requested period. Undated assignments are excluded.", _date_range_properties(), ["start_date", "end_date"]),
+        schema=_schema("timesheet_simplicate_assignments", "Read actual planned Simplicate assignments for the employee and requested period. Requires is_planned=true, active status and overlapping dates.", _date_range_properties(), ["start_date", "end_date"]),
         handler=handle_simplicate_assignments,
     )
 
     ctx.register_tool(
+        name="timesheet_simplicate_booking_assignments", toolset=TOOLSET,
+        schema=_schema("timesheet_simplicate_booking_assignments", "Read credible Simplicate assignment booking targets for the employee: active project, active assignment, valid project service and resource-planner service. Undated records are candidates, not planning evidence.", _date_range_properties(), ["start_date", "end_date"]),
+        handler=handle_simplicate_booking_assignments,
+    )
+
+    ctx.register_tool(
         name="timesheet_simplicate_available_assignments", toolset=TOOLSET,
-        schema=_schema("timesheet_simplicate_available_assignments", "Read current candidate assignment records for diagnostic/override work. Do not infer that undated means currently available.", _date_range_properties(), ["start_date", "end_date"]),
+        schema=_schema("timesheet_simplicate_available_assignments", "DEPRECATED compatibility alias for timesheet_simplicate_booking_assignments.", _date_range_properties(), ["start_date", "end_date"]),
         handler=handle_simplicate_available_assignments,
     )
 
