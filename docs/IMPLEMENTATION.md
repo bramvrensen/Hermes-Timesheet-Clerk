@@ -2,7 +2,7 @@
 
 This document records implementation facts that are more concrete than the functional design. `DESIGN.md` remains the source of truth for intended behaviour.
 
-## 0.1.7 foundation
+## 0.1.8 foundation
 
 Implemented on `main`:
 
@@ -14,13 +14,14 @@ Implemented on `main`:
 - environment-based secret/config loading;
 - normalized structured API errors with retry classification;
 - Clockify REST reads for time entries, projects and clients;
-- Simplicate REST reads for active projects, services/tasks, hour types, planned assignments, available assignment candidates and booked hours;
+- Simplicate REST reads for active projects, services/tasks, hour types, planned assignments, candidate assignment records and booked hours;
 - assignment normalization for agent-facing context;
-- five read-only HERMES tools:
+- six read-only HERMES tools, including temporary diagnostics:
   - `timesheet_clockify_entries`
   - `timesheet_simplicate_context`
   - `timesheet_simplicate_assignments`
   - `timesheet_simplicate_available_assignments`
+  - `timesheet_simplicate_debug_assignments`
   - `timesheet_simplicate_booked_hours`
 - Timesheet Clerk SKILL with planned-assignment-first, autonomy and learning policy;
 - no write capability exposed to HERMES.
@@ -61,36 +62,50 @@ timesheet-clerk:timesheet-clerk
 
 ### Native Hermes plugin boundary
 
-Native directory plugins are discovered from a root `__init__.py` containing `register(ctx)`. A manifest `entrypoint: plugin.py` is not sufficient for the installed Hermes version. The repository therefore keeps `plugin.py` as the implementation module and exposes its `register` function from root `__init__.py`.
+Native directory plugins are discovered from a root `__init__.py` containing `register(ctx)`. A manifest `entrypoint: plugin.py` is not sufficient for the installed Hermes version.
 
 ### Simplicate assignments
 
-The live assignment model follows the previously working Antigravity implementation:
+Validated behaviour so far:
 
-- assignment membership is represented by `employees[]`, not a singular `employee`/`employee_id` field;
+- assignment membership is represented by `employees[]`;
 - blocked assignments are identified by `status.is_blocked`;
-- project status label `tab_pclosed` identifies closed projects and those are excluded from active context.
+- project status label `tab_pclosed` identifies closed projects;
+- dated assignments can be used as planning evidence when their date range overlaps the requested period;
+- undated assignments must **not** be interpreted as proof that they are currently available booking targets.
 
-A critical distinction is now explicit:
+The previous `available_assignments` interpretation is therefore provisional. Before implementing the manual assignment override list, the raw REST assignment shape must be validated against the live tenant and correlated with project/service/hour-type masterdata.
 
-- **planned assignments** have both `start_date` and `end_date` and overlap the requested period;
-- **available assignments** are non-blocked assignments linked to the employee that may be valid booking/override candidates. Undated assignments are included here but are not treated as evidence that the employee is planned on them for a specific day.
+### Temporary assignment diagnostic
 
-This separation matches Simplicate's documented Insights planning model: `api_project_assignments_facts` contains daily planning facts and excludes assignments without a start or end date. The normal REST API does not expose an equivalent employee/day planning-facts endpoint, so the REST client uses the dated assignment period as planning evidence while keeping undated candidates separate.
+Version 0.1.8 exposes:
 
-`timesheet_simplicate_assignments` returns only planned assignments. `timesheet_simplicate_available_assignments` is intended for override candidate lookup. `timesheet_simplicate_context` exposes both as `planned_assignments` and `available_assignments`; the legacy `assignments` field aliases the planned set.
+```text
+timesheet_simplicate_debug_assignments
+```
+
+This tool returns a deliberately small and safe projection of up to ten raw employee assignment records. It includes candidate relationship fields and the raw key names, but excludes credentials and arbitrary unrelated fields.
+
+It exists only to answer these questions against the live tenant:
+
+- which field links an assignment to a project;
+- which field links it to a project service/task;
+- which field carries the hour type;
+- whether customer/organization information is embedded or must be resolved through project masterdata;
+- what `hours` represents in the raw assignment object;
+- which status fields can be used to exclude obsolete assignment records.
+
+The diagnostic tool must be removed again once normalization is proven.
 
 ### Simplicate booked hours
 
-The proven API query format is retained internally:
+The proven API query format remains internal:
 
 ```text
 q[employee.id]=employee:<id>
 q[start_date][ge]=YYYY-MM-DD 00:00:00
 q[start_date][le]=YYYY-MM-DD 23:59:59
 ```
-
-These prefixes and timestamp conventions must not leak into the SKILL or plan contract.
 
 ## Validation status
 
@@ -101,15 +116,14 @@ Validated in the live Hermes environment:
 - plugin passes `hermes plugins doctor`;
 - plugin toolset is enabled globally;
 - `timesheet_clockify_entries` successfully returns live Clockify entries;
-- `timesheet_simplicate_assignments` can be dynamically discovered and invoked by ATLAS/Hermes.
+- `timesheet_simplicate_assignments` successfully returns dated planning records that match the Simplicate planning view.
+
+Not yet validated:
+
+- reliable manual assignment override candidate selection;
+- assignment → customer/project/service/hour-type normalization;
+- assignment booking write semantics.
 
 ## Next validation step
 
-Pull/reload v0.1.7 and verify for a single day:
-
-1. `timesheet_simplicate_assignments` no longer returns undated historical assignments;
-2. `timesheet_simplicate_available_assignments` still exposes those undated records as possible manual override targets;
-3. planned assignment fields contain enough project/task/hour-type context for planned-assignment-first matching;
-4. `timesheet_simplicate_booked_hours` returns only the configured employee's booked hours for the requested inclusive date range.
-
-The assignment booking write method remains intentionally unimplemented until the real Simplicate write semantics are verified.
+Pull/reload v0.1.8 and invoke `timesheet_simplicate_debug_assignments` with `limit: 3`. Use the returned raw field shapes to correct normalization before changing assignment candidate filtering again.
