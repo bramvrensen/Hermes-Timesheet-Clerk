@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from timesheet_clerk.clockify import ClockifyClient
 from timesheet_clerk.config import ClockifyConfig, ConfigError, SimplicateConfig
 from timesheet_clerk.http import IntegrationError
 from timesheet_clerk.simplicate import SimplicateClient
+
+
+PLUGIN_ROOT = Path(__file__).resolve().parent
+TIMESHEET_SKILL = PLUGIN_ROOT / "skills" / "timesheet-clerk" / "SKILL.md"
 
 
 def _ok(data: Any) -> dict[str, Any]:
@@ -55,7 +60,13 @@ def simplicate_booked_hours(start_date: str, end_date: str) -> dict[str, Any]:
 
 
 def register(ctx) -> None:
-    """Register read-only Timesheet Clerk tools with HERMES."""
+    """Register Timesheet Clerk skill and read-only tools with HERMES."""
+    ctx.register_skill(
+        "timesheet-clerk",
+        TIMESHEET_SKILL,
+        "Prepare, reconcile and review weekly timesheet booking plans from Clockify and Simplicate.",
+    )
+
     ctx.register_tool(
         name="timesheet_clockify_entries",
         description="Read normalized Clockify time entries for a requested interval.",
