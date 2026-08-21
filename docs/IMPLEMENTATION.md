@@ -2,7 +2,7 @@
 
 This document records implementation facts that are more concrete than the functional design. `DESIGN.md` remains the source of truth for intended behaviour.
 
-## 0.1.8 foundation
+## 0.1.9 foundation
 
 Implemented on `main`:
 
@@ -14,14 +14,15 @@ Implemented on `main`:
 - environment-based secret/config loading;
 - normalized structured API errors with retry classification;
 - Clockify REST reads for time entries, projects and clients;
-- Simplicate REST reads for active projects, services/tasks, hour types, planned assignments, candidate assignment records and booked hours;
-- assignment normalization for agent-facing context;
-- six read-only HERMES tools, including temporary diagnostics:
+- Simplicate REST reads for active projects, services/tasks, hour types, planned assignments, validated booking assignment candidates and booked hours;
+- assignment normalization based on the live tenant response;
+- seven read-only HERMES tools, including temporary diagnostics and one compatibility alias:
   - `timesheet_clockify_entries`
   - `timesheet_simplicate_context`
   - `timesheet_simplicate_assignments`
-  - `timesheet_simplicate_available_assignments`
-  - `timesheet_simplicate_debug_assignments`
+  - `timesheet_simplicate_booking_assignments`
+  - `timesheet_simplicate_available_assignments` (deprecated alias)
+  - `timesheet_simplicate_debug_assignments` (temporary)
   - `timesheet_simplicate_booked_hours`
 - Timesheet Clerk SKILL with planned-assignment-first, autonomy and learning policy;
 - no write capability exposed to HERMES.
@@ -64,38 +65,65 @@ timesheet-clerk:timesheet-clerk
 
 Native directory plugins are discovered from a root `__init__.py` containing `register(ctx)`. A manifest `entrypoint: plugin.py` is not sufficient for the installed Hermes version.
 
-### Simplicate assignments
+### Simplicate assignment shape validated in live tenant
 
-Validated behaviour so far:
+The live REST response on 2026-08-21 established these concrete field locations:
 
-- assignment membership is represented by `employees[]`;
-- blocked assignments are identified by `status.is_blocked`;
-- project status label `tab_pclosed` identifies closed projects;
-- dated assignments can be used as planning evidence when their date range overlaps the requested period;
-- undated assignments must **not** be interpreted as proof that they are currently available booking targets.
+```text
+employees[]                  -> assigned employees
+status.is_blocked            -> blocked state
+status.is_done               -> completed state
+is_planned                   -> explicit planning flag
+project                      -> project object
+project.organization         -> customer/organization
+projectservice               -> task/service
+projecthourstype             -> hour type
+hours_type                   -> additional hour-type field present in the tenant response
+hours                        -> assignment hours
+hours_total                  -> total assignment hours
+```
 
-The previous `available_assignments` interpretation is therefore provisional. Before implementing the manual assignment override list, the raw REST assignment shape must be validated against the live tenant and correlated with project/service/hour-type masterdata.
+The earlier normalizer incorrectly expected customer/hour-type fields at the assignment root. Version 0.1.9 normalizes from the tenant-validated nested fields.
+
+Normalized assignment output now includes:
+
+- customer ID/name from `project.organization`;
+- project ID/name/number;
+- task/service ID/name and `use_in_resource_planner`;
+- hour-type ID/name from `projecthourstype`, falling back to `hours_type`;
+- assignment dates and hour values;
+- explicit `is_planned`;
+- normalized status;
+- a UI-friendly `Customer · Project · Assignment` display label.
+
+### Planned assignments
+
+`timesheet_simplicate_assignments` returns planning evidence only when all of these are true:
+
+- configured employee is present in `employees[]`;
+- assignment is not blocked or done;
+- `is_planned = true`;
+- both start and end dates exist;
+- assignment overlaps the requested period.
+
+### Booking assignments
+
+`timesheet_simplicate_booking_assignments` returns credible assignment booking/override targets when all of these are true:
+
+- configured employee is present in `employees[]`;
+- assignment is not blocked or done;
+- linked project is active;
+- a project service exists;
+- `projectservice.use_in_resource_planner = true`;
+- if dated, the assignment overlaps the requested period.
+
+An undated record may therefore be a booking candidate, but it is never treated as planning evidence by itself.
+
+The old `timesheet_simplicate_available_assignments` name is retained temporarily as a compatibility alias and should not be used in new logic.
 
 ### Temporary assignment diagnostic
 
-Version 0.1.8 exposes:
-
-```text
-timesheet_simplicate_debug_assignments
-```
-
-This tool returns a deliberately small and safe projection of up to ten raw employee assignment records. It includes candidate relationship fields and the raw key names, but excludes credentials and arbitrary unrelated fields.
-
-It exists only to answer these questions against the live tenant:
-
-- which field links an assignment to a project;
-- which field links it to a project service/task;
-- which field carries the hour type;
-- whether customer/organization information is embedded or must be resolved through project masterdata;
-- what `hours` represents in the raw assignment object;
-- which status fields can be used to exclude obsolete assignment records.
-
-The diagnostic tool must be removed again once normalization is proven.
+`timesheet_simplicate_debug_assignments` remains available temporarily so the new normalization can be validated against live results. It should be removed once the new booking-assignment output is confirmed.
 
 ### Simplicate booked hours
 
@@ -116,14 +144,12 @@ Validated in the live Hermes environment:
 - plugin passes `hermes plugins doctor`;
 - plugin toolset is enabled globally;
 - `timesheet_clockify_entries` successfully returns live Clockify entries;
-- `timesheet_simplicate_assignments` successfully returns dated planning records that match the Simplicate planning view.
+- `timesheet_simplicate_assignments` returns planning records matching the Simplicate planning view;
+- raw assignment shape has been inspected directly from the live tenant.
 
-Not yet validated:
+Next validation targets:
 
-- reliable manual assignment override candidate selection;
-- assignment → customer/project/service/hour-type normalization;
-- assignment booking write semantics.
-
-## Next validation step
-
-Pull/reload v0.1.8 and invoke `timesheet_simplicate_debug_assignments` with `limit: 3`. Use the returned raw field shapes to correct normalization before changing assignment candidate filtering again.
+- `timesheet_simplicate_booking_assignments` returns a recognizable override list with customer/project/task/hour-type context;
+- normalized hour type from `projecthourstype` matches Simplicate;
+- booked-hours reconciliation returns the expected employee/date subset;
+- assignment booking write semantics remain intentionally unimplemented until verified.
