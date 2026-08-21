@@ -75,13 +75,44 @@ class SimplicateClient:
     def get_hour_types(self) -> list[dict[str, Any]]:
         return self._paged("hours/hourstype")
 
-    def _employee_assignments(self) -> list[dict[str, Any]]:
-        """Return non-blocked assignments linked to the configured employee.
+    def debug_assignment_shapes(self, limit: int = 3) -> list[dict[str, Any]]:
+        """Return a small, safe projection of raw employee assignment records.
 
-        Simplicate exposes assignment membership through ``employees[]``.
-        This helper deliberately does not decide whether an assignment counts as
-        current planning; that distinction is made by the public methods below.
+        This exists only to validate tenant-specific Simplicate field shapes.
+        It intentionally excludes arbitrary/free-text fields and never returns
+        credentials. The output should be removed once normalization is proven.
         """
+        rows: list[dict[str, Any]] = []
+        for assignment in self._employee_assignments()[: max(1, min(limit, 10))]:
+            rows.append({
+                "id": assignment.get("id"),
+                "name": assignment.get("name") or assignment.get("title"),
+                "start_date": assignment.get("start_date"),
+                "end_date": assignment.get("end_date"),
+                "hours": assignment.get("hours"),
+                "planned_hours": assignment.get("planned_hours"),
+                "status": assignment.get("status"),
+                "employees": assignment.get("employees"),
+                "project": assignment.get("project"),
+                "project_id": assignment.get("project_id"),
+                "projectservice": assignment.get("projectservice"),
+                "projectservice_id": assignment.get("projectservice_id"),
+                "service": assignment.get("service"),
+                "service_id": assignment.get("service_id"),
+                "type": assignment.get("type"),
+                "type_id": assignment.get("type_id"),
+                "hourstype": assignment.get("hourstype"),
+                "hourstype_id": assignment.get("hourstype_id"),
+                "organization": assignment.get("organization"),
+                "organization_id": assignment.get("organization_id"),
+                "customer": assignment.get("customer"),
+                "customer_id": assignment.get("customer_id"),
+                "raw_keys": sorted(assignment.keys()),
+            })
+        return rows
+
+    def _employee_assignments(self) -> list[dict[str, Any]]:
+        """Return non-blocked assignments linked to the configured employee."""
         employee = _plain_id(self.config.employee_id)
         relevant: list[dict[str, Any]] = []
 
@@ -101,65 +132,39 @@ class SimplicateClient:
         return relevant
 
     def get_planned_assignments(self, start_date: str, end_date: str) -> list[dict[str, Any]]:
-        """Return assignments representing actual planning for the period.
-
-        A planned assignment must have both start and end dates and overlap the
-        requested interval. This matches Simplicate's own planning/facts model,
-        which excludes assignments without either boundary from assignment
-        planning facts.
-        """
         planned: list[dict[str, Any]] = []
         for assignment in self._employee_assignments():
             assignment_start = _date_part(assignment.get("start_date"))
             assignment_end = _date_part(assignment.get("end_date"))
-
             if not assignment_start or not assignment_end:
                 continue
             if assignment_start > end_date or assignment_end < start_date:
                 continue
-
             normalized = _normalize_assignment(assignment)
             normalized["planning_status"] = "planned"
             planned.append(normalized)
-
         return planned
 
     def get_available_assignments(self, start_date: str, end_date: str) -> list[dict[str, Any]]:
-        """Return assignments that may be valid booking targets for the period.
-
-        Undated assignments are included here because they can still represent
-        reusable booking targets. Dated assignments are only included when their
-        period overlaps the requested interval, because Simplicate validates
-        hour registrations against assignment date ranges.
-        """
         available: list[dict[str, Any]] = []
         for assignment in self._employee_assignments():
             assignment_start = _date_part(assignment.get("start_date"))
             assignment_end = _date_part(assignment.get("end_date"))
-
             if assignment_start and assignment_start > end_date:
                 continue
             if assignment_end and assignment_end < start_date:
                 continue
-
             normalized = _normalize_assignment(assignment)
             normalized["planning_status"] = (
                 "planned" if assignment_start and assignment_end else "undated_available"
             )
             available.append(normalized)
-
         return available
 
     def get_assignments(self, start_date: str, end_date: str) -> list[dict[str, Any]]:
-        """Backward-compatible alias for planned assignments.
-
-        Agent-facing assignment lookup is planning-first. Consumers that need
-        override candidates should explicitly call ``get_available_assignments``.
-        """
         return self.get_planned_assignments(start_date, end_date)
 
     def get_booked_hours(self, start_date: str, end_date: str) -> list[dict[str, Any]]:
-        """Return booked hours for the configured employee and inclusive days."""
         return self._paged(
             "hours/hours",
             {
@@ -178,8 +183,6 @@ class SimplicateClient:
             "hour_types": self.get_hour_types(),
             "planned_assignments": planned,
             "available_assignments": available,
-            # Compatibility field. Planning logic must treat this as planned,
-            # not as the complete set of override candidates.
             "assignments": planned,
         }
 
@@ -201,7 +204,6 @@ def _employee_id(value: Any) -> str:
 
 
 def _date_part(value: Any) -> str:
-    """Return the YYYY-MM-DD portion without teaching callers date quirks."""
     return str(value or "")[:10]
 
 
