@@ -2,15 +2,15 @@
 
 This document records implementation facts that are more concrete than the functional design. `DESIGN.md` remains the source of truth for intended behaviour.
 
-## 0.1.9 foundation
+## 0.1.10 foundation
 
 Implemented on `main`:
 
 - native HERMES directory-plugin entrypoint through root `__init__.py` with `register(ctx)`;
 - canonical `ctx.register_tool(...)` usage with toolset, full model-facing schema and JSON-string handlers;
 - native HERMES plugin manifest and `requires_env` prerequisites for Clockify/Simplicate configuration;
-- bundled Timesheet Clerk skill registered through `ctx.register_skill(...)`;
-- plugin skill qualified name: `timesheet-clerk:timesheet-clerk`;
+- bundled Timesheet Clerk skill stored under the Hermes productivity category convention at `skills/productivity/timesheet-clerk/SKILL.md` and registered through `ctx.register_skill(...)`;
+- plugin skill qualified name remains `timesheet-clerk:timesheet-clerk` because Hermes namespaces plugin-bundled skills independently of their repository category path;
 - environment-based secret/config loading;
 - normalized structured API errors with retry classification;
 - Clockify REST reads for time entries, projects and clients;
@@ -50,14 +50,16 @@ CLOCKIFY_BASE_URL=https://api.clockify.me/api/v1
 The skill is bundled inside the plugin repository at:
 
 ```text
-skills/timesheet-clerk/SKILL.md
+skills/productivity/timesheet-clerk/SKILL.md
 ```
 
-The plugin registers it explicitly during `register(ctx)`. Hermes namespaces plugin skills, so the expected skill name is:
+This matches Hermes' normal category layout (`skills/productivity/<skill>/SKILL.md`). Plugin-bundled skills are still registered through `ctx.register_skill(...)`, so Hermes qualifies the runtime name as:
 
 ```text
 timesheet-clerk:timesheet-clerk
 ```
+
+The category path improves repository consistency but does not by itself convert a plugin-bundled skill into a normal profile skill. If the dashboard/TUI skill inventory omits namespaced plugin skills, that is a Hermes presentation/discovery distinction rather than a missing file.
 
 ## Important compatibility findings
 
@@ -83,18 +85,7 @@ hours                        -> assignment hours
 hours_total                  -> total assignment hours
 ```
 
-The earlier normalizer incorrectly expected customer/hour-type fields at the assignment root. Version 0.1.9 normalizes from the tenant-validated nested fields.
-
-Normalized assignment output now includes:
-
-- customer ID/name from `project.organization`;
-- project ID/name/number;
-- task/service ID/name and `use_in_resource_planner`;
-- hour-type ID/name from `projecthourstype`, falling back to `hours_type`;
-- assignment dates and hour values;
-- explicit `is_planned`;
-- normalized status;
-- a UI-friendly `Customer · Project · Assignment` display label.
+Normalized assignment output includes customer/project/task/hour-type context, dates, status, planning flags and a UI-friendly `Customer · Project · Assignment` display label.
 
 ### Planned assignments
 
@@ -123,7 +114,7 @@ The old `timesheet_simplicate_available_assignments` name is retained temporaril
 
 ### Temporary assignment diagnostic
 
-`timesheet_simplicate_debug_assignments` remains available temporarily so the new normalization can be validated against live results. It should be removed once the new booking-assignment output is confirmed.
+`timesheet_simplicate_debug_assignments` remains available temporarily so the normalization can be validated against live results. It should be removed after final validation.
 
 ### Simplicate booked hours
 
@@ -145,11 +136,12 @@ Validated in the live Hermes environment:
 - plugin toolset is enabled globally;
 - `timesheet_clockify_entries` successfully returns live Clockify entries;
 - `timesheet_simplicate_assignments` returns planning records matching the Simplicate planning view;
+- `timesheet_simplicate_booking_assignments` returns a recognizable assignment list with customer/project/task context;
 - raw assignment shape has been inspected directly from the live tenant.
 
 Next validation targets:
 
-- `timesheet_simplicate_booking_assignments` returns a recognizable override list with customer/project/task/hour-type context;
-- normalized hour type from `projecthourstype` matches Simplicate;
+- explain and remove the runtime difference between terminal/TUI tool discovery and WebUI chat tool discovery;
+- validate hour-type labels/masterdata correlation;
 - booked-hours reconciliation returns the expected employee/date subset;
 - assignment booking write semantics remain intentionally unimplemented until verified.
