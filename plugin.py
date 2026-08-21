@@ -13,7 +13,7 @@ from .timesheet_clerk.simplicate import SimplicateClient
 
 
 PLUGIN_ROOT = Path(__file__).resolve().parent
-TIMESHEET_SKILL = PLUGIN_ROOT / "skills" / "timesheet-clerk" / "SKILL.md"
+TIMESHEET_SKILL = PLUGIN_ROOT / "skills" / "productivity" / "timesheet-clerk" / "SKILL.md"
 TOOLSET = "timesheet_clerk"
 
 
