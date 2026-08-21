@@ -27,18 +27,8 @@ def _error(exc: Exception) -> str:
         payload["success"] = False
         return json.dumps(payload, ensure_ascii=False, default=str)
     if isinstance(exc, ConfigError):
-        return json.dumps({
-            "success": False,
-            "error_type": "configuration_error",
-            "message": str(exc),
-            "retryable": False,
-        })
-    return json.dumps({
-        "success": False,
-        "error_type": "unexpected_error",
-        "message": str(exc),
-        "retryable": False,
-    })
+        return json.dumps({"success": False, "error_type": "configuration_error", "message": str(exc), "retryable": False})
+    return json.dumps({"success": False, "error_type": "unexpected_error", "message": str(exc), "retryable": False})
 
 
 def _safe(call: Callable[[], Any]) -> str:
@@ -50,49 +40,37 @@ def _safe(call: Callable[[], Any]) -> str:
 
 def handle_clockify_entries(params: dict[str, Any], **kwargs: Any) -> str:
     del kwargs
-    return _safe(lambda: ClockifyClient(ClockifyConfig.from_env()).get_time_entries(
-        params["start"], params["end"]
-    ))
+    return _safe(lambda: ClockifyClient(ClockifyConfig.from_env()).get_time_entries(params["start"], params["end"]))
 
 
 def handle_simplicate_context(params: dict[str, Any], **kwargs: Any) -> str:
     del kwargs
-    return _safe(lambda: SimplicateClient(SimplicateConfig.from_env()).get_context(
-        params["start_date"], params["end_date"]
-    ))
+    return _safe(lambda: SimplicateClient(SimplicateConfig.from_env()).get_context(params["start_date"], params["end_date"]))
 
 
 def handle_simplicate_assignments(params: dict[str, Any], **kwargs: Any) -> str:
     del kwargs
-    return _safe(lambda: SimplicateClient(SimplicateConfig.from_env()).get_planned_assignments(
-        params["start_date"], params["end_date"]
-    ))
+    return _safe(lambda: SimplicateClient(SimplicateConfig.from_env()).get_planned_assignments(params["start_date"], params["end_date"]))
 
 
 def handle_simplicate_available_assignments(params: dict[str, Any], **kwargs: Any) -> str:
     del kwargs
-    return _safe(lambda: SimplicateClient(SimplicateConfig.from_env()).get_available_assignments(
-        params["start_date"], params["end_date"]
-    ))
+    return _safe(lambda: SimplicateClient(SimplicateConfig.from_env()).get_available_assignments(params["start_date"], params["end_date"]))
+
+
+def handle_simplicate_debug_assignments(params: dict[str, Any], **kwargs: Any) -> str:
+    del kwargs
+    limit = int(params.get("limit", 3))
+    return _safe(lambda: SimplicateClient(SimplicateConfig.from_env()).debug_assignment_shapes(limit))
 
 
 def handle_simplicate_booked_hours(params: dict[str, Any], **kwargs: Any) -> str:
     del kwargs
-    return _safe(lambda: SimplicateClient(SimplicateConfig.from_env()).get_booked_hours(
-        params["start_date"], params["end_date"]
-    ))
+    return _safe(lambda: SimplicateClient(SimplicateConfig.from_env()).get_booked_hours(params["start_date"], params["end_date"]))
 
 
 def _schema(name: str, description: str, properties: dict[str, Any], required: list[str]) -> dict[str, Any]:
-    return {
-        "name": name,
-        "description": description,
-        "parameters": {
-            "type": "object",
-            "properties": properties,
-            "required": required,
-        },
-    }
+    return {"name": name, "description": description, "parameters": {"type": "object", "properties": properties, "required": required}}
 
 
 def _date_range_properties() -> dict[str, Any]:
@@ -103,7 +81,6 @@ def _date_range_properties() -> dict[str, Any]:
 
 
 def register(ctx) -> None:
-    """Register the Timesheet Clerk skill and read-only planning tools."""
     ctx.register_skill(
         "timesheet-clerk",
         TIMESHEET_SKILL,
@@ -111,64 +88,41 @@ def register(ctx) -> None:
     )
 
     ctx.register_tool(
-        name="timesheet_clockify_entries",
-        toolset=TOOLSET,
-        schema=_schema(
-            "timesheet_clockify_entries",
-            "Read normalized Clockify time entries for a requested interval.",
-            {
-                "start": {"type": "string", "description": "ISO-8601 interval start"},
-                "end": {"type": "string", "description": "ISO-8601 interval end"},
-            },
-            ["start", "end"],
-        ),
-        handler=handle_clockify_entries,
+        name="timesheet_clockify_entries", toolset=TOOLSET,
+        schema=_schema("timesheet_clockify_entries", "Read normalized Clockify time entries for a requested interval.", {
+            "start": {"type": "string", "description": "ISO-8601 interval start"},
+            "end": {"type": "string", "description": "ISO-8601 interval end"},
+        }, ["start", "end"]), handler=handle_clockify_entries,
     )
 
     ctx.register_tool(
-        name="timesheet_simplicate_context",
-        toolset=TOOLSET,
-        schema=_schema(
-            "timesheet_simplicate_context",
-            "Read Simplicate masterdata, planned assignments and available assignment override candidates for a period.",
-            _date_range_properties(),
-            ["start_date", "end_date"],
-        ),
+        name="timesheet_simplicate_context", toolset=TOOLSET,
+        schema=_schema("timesheet_simplicate_context", "Read Simplicate masterdata, planned assignments and assignment override candidates for a period.", _date_range_properties(), ["start_date", "end_date"]),
         handler=handle_simplicate_context,
     )
 
     ctx.register_tool(
-        name="timesheet_simplicate_assignments",
-        toolset=TOOLSET,
-        schema=_schema(
-            "timesheet_simplicate_assignments",
-            "Read Simplicate assignments that represent actual planning for the employee and overlap the requested period. Undated assignments are excluded.",
-            _date_range_properties(),
-            ["start_date", "end_date"],
-        ),
+        name="timesheet_simplicate_assignments", toolset=TOOLSET,
+        schema=_schema("timesheet_simplicate_assignments", "Read Simplicate assignments that represent actual planning for the employee and overlap the requested period. Undated assignments are excluded.", _date_range_properties(), ["start_date", "end_date"]),
         handler=handle_simplicate_assignments,
     )
 
     ctx.register_tool(
-        name="timesheet_simplicate_available_assignments",
-        toolset=TOOLSET,
-        schema=_schema(
-            "timesheet_simplicate_available_assignments",
-            "Read Simplicate assignments available as booking/override candidates for the employee and period, including undated assignments.",
-            _date_range_properties(),
-            ["start_date", "end_date"],
-        ),
+        name="timesheet_simplicate_available_assignments", toolset=TOOLSET,
+        schema=_schema("timesheet_simplicate_available_assignments", "Read current candidate assignment records for diagnostic/override work. Do not infer that undated means currently available.", _date_range_properties(), ["start_date", "end_date"]),
         handler=handle_simplicate_available_assignments,
     )
 
     ctx.register_tool(
-        name="timesheet_simplicate_booked_hours",
-        toolset=TOOLSET,
-        schema=_schema(
-            "timesheet_simplicate_booked_hours",
-            "Read already booked Simplicate hours for reconciliation.",
-            _date_range_properties(),
-            ["start_date", "end_date"],
-        ),
+        name="timesheet_simplicate_debug_assignments", toolset=TOOLSET,
+        schema=_schema("timesheet_simplicate_debug_assignments", "TEMPORARY DIAGNOSTIC: return a safe projection of a few raw Simplicate assignment records for field-shape validation. Do not use for mapping or booking decisions.", {
+            "limit": {"type": "integer", "minimum": 1, "maximum": 10, "description": "Number of records, default 3"}
+        }, []),
+        handler=handle_simplicate_debug_assignments,
+    )
+
+    ctx.register_tool(
+        name="timesheet_simplicate_booked_hours", toolset=TOOLSET,
+        schema=_schema("timesheet_simplicate_booked_hours", "Read already booked Simplicate hours for reconciliation.", _date_range_properties(), ["start_date", "end_date"]),
         handler=handle_simplicate_booked_hours,
     )
