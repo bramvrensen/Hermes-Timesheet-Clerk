@@ -5,7 +5,7 @@ import html
 import subprocess
 import sys
 from copy import deepcopy
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -94,6 +94,7 @@ def _theme_css(theme: str) -> str:
     root = dark if theme == "dark" else light
     media = "" if theme != "system" else f"@media(prefers-color-scheme:dark){{:root{{{dark}}}}}"
     return f"""<style>:root{{{root}}}{media}
+    [data-stale='true']{{display:none !important}}
     .tc-entry{{border:1px solid var(--border);border-left-width:5px;border-radius:10px;padding:.65rem .85rem;margin:.4rem 0 .2rem;background:var(--card)}}
     .tc-entry.auto{{border-left-color:#2da44e;background:var(--auto)}}.tc-entry.propose{{border-left-color:#d29922;background:var(--propose)}}.tc-entry.ask{{border-left-color:#cf222e;background:var(--ask)}}.tc-entry.booked{{border-left-color:#6e7781;background:var(--booked);opacity:.84}}.tc-entry.skip{{border-left-color:#8c959f;opacity:.52}}
     .tc-entry.skip .tc-title,.tc-entry.skip .tc-target,.tc-entry.skip .tc-time,.tc-entry.skip .tc-hours{{text-decoration:line-through}}
@@ -184,7 +185,11 @@ def _direct_editor(plan: dict[str, Any], entry: dict[str, Any]) -> dict[str, Any
     customer=_select_row("Customer",ctx.get("customers") or [],m.get("customer_id") or "",f"c-{entry['entry_id']}"); cid=_plain_id(customer)
     projects=[r for r in ctx.get("projects") or [] if not cid or _plain_id(r.get("customer_id"))==cid]; project=_select_row("Project",projects,m.get("project_id") or "",f"p-{entry['entry_id']}"); pid=_plain_id(project)
     services=[r for r in ctx.get("services") or [] if not pid or not r.get("project_id") or _plain_id(r.get("project_id"))==pid]; service=_select_row("Task / service",services,m.get("service_id") or "",f"s-{entry['entry_id']}"); sid=_plain_id(service)
-    types=[r for r in ctx.get("hour_types") or [] if not sid or not r.get("service_id") or _plain_id(r.get("service_id"))==sid]; typ=_select_row("Hour type",types,m.get("hour_type_id") or "",f"h-{entry['entry_id']}")
+    types=[r for r in ctx.get("hour_types") or [] if sid and _plain_id(r.get("service_id"))==sid]
+    preferred=str(read_config().get("preferred_hour_type") or "").casefold()
+    if preferred:
+        types.sort(key=lambda r:(0 if _name(r).casefold()==preferred else 1,_name(r).casefold()))
+    typ=_select_row("Hour type",types,m.get("hour_type_id") or "",f"h-{entry['entry_id']}")
     return {"customer_id":cid or None,"customer_name":_name(customer) if customer else None,"project_id":pid or None,"project_name":_name(project) if project else None,"service_id":sid or None,"service_name":_name(service) if service else None,"hour_type_id":_plain_id(typ) or None,"hour_type_name":_name(typ) if typ else None,"billable":bool(m.get("billable",True))}
 
 
@@ -254,20 +259,32 @@ def _select_plan() -> dict[str, Any]:
 
 def _trigger_atlas(plan: dict[str, Any]) -> None:
     cfg=read_config(); profile=str(cfg.get("planner_profile") or "atlas"); week=plan.get("week") or {}
-    prompt=f"Run the complete Timesheet Clerk sync workflow for {week.get('monday')} through {week.get('sunday')}. Read timesheet_config_get first. Synchronize the open week with timesheet_plan_sync, preserving reviewed entries. Do not book hours."
+    prompt=(
+        f"Synchronize Timesheet Clerk for {week.get('monday')} through {week.get('sunday')}. "
+        "Use Timesheet Clerk tools only for Timesheet Clerk state. First call timesheet_config_get, "
+        "timesheet_plan_active, timesheet_learning_context, Clockify and Simplicate read tools. "
+        "Use ISO-8601 timestamps for Clockify tool arguments. Then call timesheet_plan_sync to update "
+        "the existing open week in place, appending new source entries and preserving confirmed, corrected "
+        "and skipped human review. Never read, search or edit plan/config/SKILL files through filesystem, "
+        "terminal or file-search tools. Do not create a new plan when an open plan exists. Do not book hours."
+    )
     log_dir=repo.root/"logs"; log_dir.mkdir(parents=True,exist_ok=True); handle=(log_dir/"planner-refresh.log").open("ab")
     subprocess.Popen(["hermes","-p",profile,"chat","-q",prompt],cwd=f"/home/hermes/.hermes/profiles/{profile}",stdout=handle,stderr=subprocess.STDOUT,start_new_session=True)
-    st.success(f"{profile} sync started in background.")
+    st.session_state["planner_sync_started"] = True
+    st.success(f"{profile} sync started in background. Use Refresh view when it finishes.")
 
 
 def _review_page(stored: dict[str, Any], plan: dict[str, Any]) -> None:
     entries=plan["entries"]; target=float(plan["target_hours"]); clocked=sum(_hours(e.get("original_duration_seconds")) for e in entries); workable=sum(_hours(e.get("planned_duration_seconds")) for e in entries if not e.get("ignored")); booked=sum(_hours(e.get("planned_duration_seconds")) for e in entries if e.get("reconciliation_state")=="BOOKED"); pending=_pending(entries)
     metrics=st.columns(5); metrics[0].metric("Target",f"{target:.1f}h"); metrics[1].metric("Clocked",f"{clocked:.1f}h"); metrics[2].metric("Workable",f"{workable:.1f}h"); metrics[3].metric("Booked",f"{booked:.1f}h"); metrics[4].metric("Open",f"{max(0,workable-booked):.1f}h")
-    c1,c2,c3=st.columns([2,2.3,5.7])
+    c1,c2,c3,c4=st.columns([1.5,2.4,1.4,4.7])
     with c1: view=st.radio("View",["week","day"],format_func=str.capitalize,horizontal=True,label_visibility="collapsed",key="timesheet_view")
     with c2:
         if st.button("↻ Generate / refresh plan",use_container_width=True): _trigger_atlas(stored)
-    with c3: st.caption(f"{stored['plan_id']} · revision {stored['revision']} · {stored['status']} · planner: {read_config()['planner_profile']}")
+    with c3:
+        if st.button("Refresh view",use_container_width=True):
+            _review_context.clear(); st.rerun()
+    with c4: st.caption(f"{stored['plan_id']} · revision {stored['revision']} · {stored['status']} · planner: {read_config()['planner_profile']}")
     if abs(workable-target)>=.01: st.warning(f"Workable time is {workable-target:+.2f}h versus target.")
     if pending: st.info(f"{pending} PROPOSE/ASK entries still need review.")
     with st.expander("⚙ Week settings",expanded=False):
@@ -276,9 +293,17 @@ def _review_page(stored: dict[str, Any], plan: dict[str, Any]) -> None:
             updated=deepcopy(stored); updated["target_hours"]=float(value); updated["status"]="IN_REVIEW"; repo.save_revision(updated,expected_revision=int(stored["revision"])); st.rerun()
     days={}
     for entry in entries: days.setdefault(str(entry.get("date") or "Unknown"),[]).append(entry)
-    keys=sorted(days)
+    keys=sorted(k for k in days if k != "Unknown")
     if view=="day" and keys:
-        day=st.selectbox("Date",keys,key="timesheet_selected_day"); _render_day(plan,day,days[day])
+        monday=date.fromisoformat(str((plan.get("week") or {}).get("monday")))
+        sunday=date.fromisoformat(str((plan.get("week") or {}).get("sunday")))
+        current=st.session_state.get("timesheet_selected_day")
+        if not isinstance(current,date) or current < monday or current > sunday:
+            current=date.fromisoformat(keys[0])
+        selected=st.date_input("Date",value=current,min_value=monday,max_value=sunday,key="timesheet_selected_day")
+        day=selected.isoformat()
+        if day in days: _render_day(plan,day,days[day])
+        else: st.info("No time entries for this date.")
     else:
         for day in keys: _render_day(plan,day,days[day])
     st.divider(); a,b=st.columns(2)
