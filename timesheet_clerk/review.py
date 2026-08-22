@@ -74,6 +74,8 @@ def apply_review(plan: dict[str, Any], entry_id: str, reviewed_values: dict[str,
     """Return updated plan, original proposal and reviewed entry.
 
     A duration change shifts only later entries on the same calendar day.
+    Restoring a skipped unresolved item reopens it for review instead of marking
+    it corrected, because a corrected entry must already have a complete target.
     """
     updated = deepcopy(plan)
     index = next((i for i, row in enumerate(updated["entries"]) if row.get("entry_id") == entry_id), None)
@@ -81,10 +83,17 @@ def apply_review(plan: dict[str, Any], entry_id: str, reviewed_values: dict[str,
         raise KeyError(entry_id)
     original = deepcopy(updated["entries"][index])
     entry = updated["entries"][index]
+    was_skipped = bool(original.get("ignored")) or original.get("review_state") == "skipped"
     for key in _REVIEW_FIELDS:
         if key in reviewed_values:
             entry[key] = deepcopy(reviewed_values[key])
-    entry["review_state"] = "skipped" if entry.get("ignored") else ("corrected" if changed_fields(original, entry) else "confirmed")
+    changes = changed_fields(original, entry)
+    if entry.get("ignored"):
+        entry["review_state"] = "skipped"
+    elif was_skipped and reviewed_values.get("ignored") is False and changes == ["ignored"]:
+        entry["review_state"] = None
+    else:
+        entry["review_state"] = "corrected" if changes else "confirmed"
     updated["status"] = "IN_REVIEW"
     if entry.get("planned_duration_seconds") != original.get("planned_duration_seconds"):
         _reflow_day(updated["entries"], index)
