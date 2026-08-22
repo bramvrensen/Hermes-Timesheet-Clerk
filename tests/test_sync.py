@@ -1,4 +1,4 @@
-from timesheet_clerk.sync import plan_summary, source_delta
+from timesheet_clerk.sync import attach_source_snapshots, plan_summary, source_delta
 
 
 def plan():
@@ -11,7 +11,7 @@ def plan():
             {
                 "entry_id": "e1",
                 "clockify_source_ids": ["c1"],
-                "source": {"description": "Meeting", "client": {"name": "Client"}, "project": {"name": "Project"}, "start": "2026-08-22T09:00:00Z", "end": "2026-08-22T10:00:00Z"},
+                "source": {"description": "Meeting", "client": {"name": "Client"}, "project": {"name": "Project"}},
                 "original_duration_seconds": 3600,
                 "planned_duration_seconds": 3600,
                 "tier": "PROPOSE",
@@ -30,22 +30,80 @@ def plan():
     }
 
 
-def source(id="c1", duration=3600):
-    return {"id": id, "description": "Meeting", "client": {"name": "Client"}, "project": {"name": "Project"}, "start": "2026-08-22T09:00:00Z", "end": "2026-08-22T10:00:00Z", "duration_seconds": duration}
+def source(id="c1", duration=3600, description="Meeting", project="Project"):
+    return {
+        "id": id,
+        "description": description,
+        "client": {"id": "client-1", "name": "Client"},
+        "project": {"id": "project-1", "name": project},
+        "start": "2026-08-22T09:00:00Z",
+        "end": "2026-08-22T10:00:00Z",
+        "duration_seconds": duration,
+    }
 
 
-def test_source_delta_detects_noop_and_missing():
-    delta = source_delta(plan(), [source(), {"id": "c2", "description": "Lunch", "duration_seconds": 1800}])
+def baseline_plan():
+    rows = [source(), source("c2", 1800, "Lunch", "Internal")]
+    return attach_source_snapshots(plan(), rows), rows
+
+
+def test_legacy_plan_requires_rebaseline_instead_of_guessing_changes():
+    delta = source_delta(plan(), [source(), source("c2", 1800, "Lunch", "Internal")])
+    assert delta["has_changes"] is True
+    assert delta["requires_rebaseline"] is True
+    assert delta["changed_count"] == 0
+    assert delta["new_count"] == 0
+
+
+def test_source_delta_detects_noop_after_baseline():
+    stored, rows = baseline_plan()
+    delta = source_delta(stored, rows)
     assert delta["has_changes"] is False
+    assert delta["requires_rebaseline"] is False
     assert delta["unchanged_count"] == 2
+    assert delta["new_count"] == 0
+    assert delta["changed_count"] == 0
+    assert delta["missing_count"] == 0
 
 
-def test_source_delta_returns_only_changed_and_new_rows():
-    delta = source_delta(plan(), [source(duration=1800), {"id": "c3", "description": "New", "duration_seconds": 900}])
+def test_source_delta_returns_only_changed_new_and_missing_rows():
+    stored, _ = baseline_plan()
+    delta = source_delta(stored, [source(duration=1800), source("c3", 900, "New", "New project")])
     assert delta["has_changes"] is True
     assert delta["changed_count"] == 1
     assert delta["new_count"] == 1
     assert delta["missing_source_ids"] == ["c2"]
+
+
+def test_multi_source_aggregate_does_not_create_false_changes():
+    p = plan()
+    # One booking entry may aggregate multiple Clockify sources. Its aggregate
+    # source/duration must not be used as source truth for either ID.
+    p["entries"] = [{
+        "entry_id": "aggregate",
+        "clockify_source_ids": ["c1", "c2"],
+        "source": {"description": "Aggregated planner label"},
+        "original_duration_seconds": 5400,
+        "planned_duration_seconds": 5400,
+        "booking_mode": "assignment",
+        "assignment": {"id": "a"},
+        "tier": "AUTO",
+        "date": "2026-08-22",
+    }]
+    rows = [source(), source("c2", 1800, "Lunch", "Internal")]
+    p = attach_source_snapshots(p, rows)
+    delta = source_delta(p, rows)
+    assert delta["has_changes"] is False
+    assert delta["unchanged_count"] == 2
+
+
+def test_simplicate_or_review_fields_do_not_change_source_snapshot():
+    stored, rows = baseline_plan()
+    stored["entries"][0]["planned_duration_seconds"] = 7200
+    stored["entries"][0]["assignment"] = {"id": "different-target"}
+    stored["entries"][0]["review_state"] = "corrected"
+    delta = source_delta(stored, rows)
+    assert delta["has_changes"] is False
 
 
 def test_plan_summary_is_deterministic():
