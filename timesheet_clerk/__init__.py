@@ -6,7 +6,7 @@ import os
 import shutil
 from pathlib import Path
 
-__version__ = "0.4.0"
+__version__ = "0.4.1"
 
 _SHARED_STATE = Path("/home/hermes/.hermes/timesheet-clerk")
 _LEGACY_STATE = Path("/home/hermes/.hermes/profiles/atlas/timesheet-clerk")
