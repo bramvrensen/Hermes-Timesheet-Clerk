@@ -50,9 +50,17 @@ def render_config(repo: PlanRepository, default_skill: Path) -> None:
 
     st.divider()
     st.caption("Maintenance")
-    if st.button("Purge expired booked artifacts"):
-        removed = purge_expired_artifacts(repo.root)
-        st.success(f"Removed {removed['approvals']} approvals and {removed['receipts']} receipts.")
+    m1, m2 = st.columns(2)
+    with m1:
+        if st.button("Purge expired booked artifacts", use_container_width=True):
+            removed = purge_expired_artifacts(repo.root)
+            st.success(f"Removed {removed['approvals']} approvals and {removed['receipts']} receipts.")
+    with m2:
+        if st.button("Restart frontend", use_container_width=True):
+            marker = repo.root / "frontend-restart.request"
+            marker.write_text("restart\n", encoding="utf-8")
+            st.success("Frontend restart requested. The managed launcher will restart Streamlit within a few seconds.")
+    st.caption("Frontend restart requires the managed launcher from frontend/run-managed.sh; the recommended Compose service uses it.")
 
 
 def render_skill(repo: PlanRepository, default_skill: Path) -> None:
