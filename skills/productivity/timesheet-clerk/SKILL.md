@@ -6,82 +6,49 @@ description: Prepare a reviewable weekly timesheet booking plan from Clockify an
 # Timesheet Clerk
 
 ## Purpose
-Prepare a deterministic, reviewable weekly booking plan. Do not book hours while planning. All `timesheet_*` capabilities are HERMES tools. Treat normalized tool output as the domain model.
-
-## Runtime policy
-At the start of every planning or synchronization run, call `timesheet_config_get` and use the returned runtime policy. Relevant settings include `planner_profile`, `contract_hours_default`, `auto_confidence_threshold`, `propose_confidence_threshold`, `semantic_similarity_auto_allowed`, `require_strong_evidence_for_auto`, `prefer_planned_assignment`, `preferred_hour_type`, and retention settings.
-
-Confidence thresholds are supporting policy boundaries. Missing masterdata, contradictory evidence or ambiguous planned assignments may never be upgraded to AUTO merely because a numeric score clears a threshold.
+Prepare a deterministic, reviewable weekly booking plan. Do not book hours while planning. Treat normalized Timesheet Clerk tool output as the domain model.
 
 ## Tool-only state access
-Timesheet Clerk working state is owned by the Timesheet Clerk tools. During planning, synchronization, review assistance or reconciliation:
+Timesheet Clerk state is owned by `timesheet_*` tools. Never read, search, infer or edit Clerk plan/config/SKILL state through filesystem, terminal, generic file tools, Drive or guessed paths. Clockify range arguments must use full ISO-8601 timestamps.
 
-- use `timesheet_plan_active`, `timesheet_plan_list`, `timesheet_plan_sync`, `timesheet_config_get` and `timesheet_learning_context` for Clerk state;
-- never read, search, infer or edit Timesheet Clerk plan/config/SKILL state through filesystem, terminal, shell, file-search, generic file-read, Google Drive or other storage tools;
-- never guess a filesystem path for a plan;
-- never reconstruct a plan from files when the Clerk tools are available;
-- a tool error must be fixed at the tool-contract level, not worked around by reading files directly.
+## Cheap sync fast path
+For every refresh of an existing week, call `timesheet_sync_probe` first.
 
-Clockify range arguments must use full ISO-8601 timestamps accepted by the Clockify tool. For a calendar week, use explicit start-of-day and end-of-day timestamps for the requested local dates rather than bare `YYYY-MM-DD` strings.
+- If `has_changes` is false, stop immediately. Do not load Simplicate context, learning context, Clockify again or the full active plan. Report only the deterministic summary returned by the probe.
+- If changes exist, use only `source_delta.new_entries` and `source_delta.changed_entries` as Clockify records requiring mapping. Then read runtime config, active plan, relevant learning evidence and only the Simplicate data needed for those deltas.
+- Missing source IDs must be surfaced and reconciled, never silently deleted.
 
 ## Clockify source fidelity
-Clockify is authoritative for the source event itself. For every plan entry, keep each Clockify source ID bound to the exact normalized Clockify row returned by `timesheet_clockify_entries`.
+Every normalized Clockify row is an immutable source bundle. Keep its ID, description, client, project, tags, start, end and duration together.
 
-- Never move a description, client, project, start, end or duration from one Clockify row to another.
-- `source.description`, `source.client`, `source.project`, `original_duration_seconds` and the source date/time must be copied from the same Clockify row(s) represented by `clockify_source_ids`.
-- For a single-source entry, `original_duration_seconds` must equal that Clockify row's `duration_seconds` exactly.
-- For a single-source entry, initialize `planned_start` and `planned_end` from that row's `start` and `end`; later deterministic review reflow may change planned timing, but generation may not invent or omit source timing.
-- When combining multiple Clockify rows is justified, sum only those exact source durations and preserve all source IDs. Do not combine unrelated meetings merely because their descriptions or clients are similar.
-- Mapping to Simplicate is a separate decision. Changing the proposed Simplicate target must never mutate the Clockify source identity or duration.
-- Before `timesheet_plan_sync`, perform a source-integrity pass over every entry. If any source ID, description, project/client, duration or source timestamp cannot be traced unambiguously to the Clockify response, leave the entry unresolved and fix the plan before syncing.
+- Never move source facts from one Clockify row to another.
+- `clockify_source_ids`, `source.description`, `source.client`, `source.project`, source timestamps and `original_duration_seconds` must trace to the same normalized Clockify row(s).
+- For a single-source entry, `original_duration_seconds` equals that row's `duration_seconds` exactly and initial planned start/end come from that row's start/end.
+- Simplicate mapping may change only the booking target, never Clockify source identity or duration.
+- Do not aggregate unrelated source rows merely because descriptions are similar.
 
-## Weekly sync workflow
-1. Determine the requested week and local calendar dates.
-2. Read `timesheet_config_get`.
-3. Read the existing working plan with `timesheet_plan_active` when one may already exist.
-4. Read prior evidence with `timesheet_learning_context`.
-5. Read Clockify entries for the complete period using ISO-8601 timestamps.
-6. Read Simplicate context, planned assignments and already booked hours.
-7. Reconcile already booked work before proposing new bookings.
-8. Try planned-assignment-first mapping when runtime policy enables it.
-9. If no suitable planned assignment can be determined, use other evidence and validated booking assignments.
-10. Only when no suitable assignment should be used, fall back to direct customer → project → task/service → hour-type mapping.
-11. Build or refresh the sequential day plan. Never consolidate across calendar-day boundaries.
-12. Run the Clockify source-integrity pass described above.
-13. Persist through `timesheet_plan_sync`. A repeated run in the same open week synchronizes the existing plan rather than creating another plan or human-review revision.
-14. Never book during generation or sync.
+## Mapping workflow when source changes exist
+1. Read `timesheet_config_get`.
+2. Read `timesheet_plan_active`.
+3. Read `timesheet_learning_context` only when mapping decisions are required.
+4. Work from the source deltas returned by `timesheet_sync_probe`, not a second full-week Clockify fetch.
+5. Read Simplicate planned assignments, booking candidates and booked hours needed for changed/new rows.
+6. Reconcile booked work.
+7. Prefer valid planned assignments when policy allows.
+8. Fall back to direct customer → project → task/service → hour type when no suitable assignment exists.
+9. Persist through `timesheet_plan_sync`; repeated runs update the same open week and preserve human review.
+10. Never book during generation or sync.
 
-New Clockify entries are appended, changed source entries are refreshed, and human-reviewed values are preserved. Never silently overwrite a confirmed, corrected or skipped entry during a later sync.
+## Deterministic summaries
+Use the summary returned by `timesheet_sync_probe`, `timesheet_plan_sync` or `timesheet_plan_summary` for all counts and totals. These values are authoritative. Do not recount ignored entries or recalculate hours in the LLM response.
 
-## Working-plan lifecycle
-The open plan is mutable working state. Human review changes create revisions; repeated planner syncs do not. `DRAFT` is generated/synchronized, `IN_REVIEW` contains human changes, `APPROVED` is the immutable booking snapshot, and `BOOKED` means booking completed with receipts.
+## Assignment and hour-type policy
+A valid Simplicate assignment is preferred. Planned dated assignments are primary planning evidence; undated booking assignments are override candidates only. Multiple plausible assignments block AUTO.
 
-## Assignment-first policy
-A valid Simplicate assignment is preferred because it already represents the employee/project/task/hour-type combination. Planned dated assignments overlapping the requested date are primary planning evidence. Undated booking assignments may be override candidates but are not planning evidence by themselves. If multiple relevant planned assignments remain plausible, do not silently choose one for AUTO.
+Direct mapping is hierarchical. Prefer service-scoped hour types. When Simplicate exposes no reliable service/hour-type relation, the review UI may expose global hour types as an explicit manual fallback; that fallback is never AUTO evidence. `preferred_hour_type` is only a tie-breaker among acceptable choices.
 
-When an assignment is selected, its customer/project/task/hour type are derived context and must not be independently remapped.
+## Autonomy and learning
+Use AUTO, PROPOSE and ASK according to runtime policy and evidence quality. Semantic similarity alone may not yield AUTO unless explicitly enabled. Ambiguity, conflicting evidence or missing masterdata blocks AUTO. Review feedback is evidence, not an immediate global rule; rules must be scoped.
 
-## Direct mapping and hour types
-Direct mapping is hierarchical: customer → project → project task/service → hour type. Never choose an hour type globally before the project service is known. Prefer hour-type relationships validated by assignments or explicit service metadata. If Simplicate exposes no scoped relation for a selected service, the review UI may offer global hour types as a manual fallback; that fallback is never sufficient evidence for AUTO.
-
-When multiple valid hour types remain for the selected project service, prefer the runtime-configured `preferred_hour_type`. The current default is `Senior Consultant`, reflecting the user's consulting role. This preference is a tie-breaker only: it must never override assignment-derived hour type, project-service validity, explicit user rules, or stronger scoped evidence.
-
-## Autonomy
-Use `AUTO`, `PROPOSE`, and `ASK` according to runtime config plus evidence quality. Evidence may include explicit rules, confirmed scoped rules, exact precedents, successful prior applications, current planned assignments, Clockify context and semantic similarity. Unless runtime config explicitly enables it, semantic similarity alone must not yield AUTO. Ambiguity, conflicting evidence or missing masterdata blocks AUTO.
-
-For PROPOSE/ASK, use compact provenance such as `conflicting_rules`, `semantic_match_only`, `missing_masterdata`, `stale_precedent`, `new_client`, `booking_assignment_only`, or `low_match_specificity`. Do not expose private chain-of-thought.
-
-## Learning
-Review feedback is evidence, not an immediate global rule. Rules must be scoped. A corrected AUTO decision is strong negative evidence. Read `timesheet_learning_context` before planning when prior behavior may be relevant.
-
-## Week hours
-Use the plan's editable `target_hours` for completeness checks. The default comes from runtime config.
-
-## Safety and retention
-- Planning/API-read tools and plan persistence are separate from Simplicate writes.
-- Never invent Simplicate IDs or assignments.
-- Never reinterpret a tool error as successful data.
-- If reconciliation is ambiguous, surface the conflict instead of marking an entry BOOKED.
-- Approved booking input is immutable.
-- After successful booking, retain the approved snapshot actually used plus booking receipts according to runtime retention policy; working plan/revision clutter may be purged.
-- Feedback and learned rules remain learning history unless runtime policy says otherwise.
+## Lifecycle, safety and retention
+The open plan is mutable working state. Human review changes create revisions; planner syncs do not. Approved booking input is immutable. Never invent Simplicate IDs, reinterpret tool errors as success, or mark ambiguous reconciliation as BOOKED. Retain approved booking snapshots and receipts according to runtime retention policy; feedback and learned rules remain long-lived learning state.
