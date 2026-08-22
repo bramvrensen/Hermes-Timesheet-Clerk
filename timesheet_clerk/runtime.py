@@ -32,6 +32,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "keep_rules_forever": True,
 }
 
+_SKILL_GUARD_MARKER = "<!-- timesheet-clerk-runtime-guard:0.4.1 -->"
+_SKILL_GUARD = f"""
+
+{_SKILL_GUARD_MARKER}
+## Mandatory Timesheet Clerk state-access guard
+Timesheet Clerk state must be accessed only through the `timesheet_*` Clerk tools. Never read, search, infer or edit Clerk plan/config/SKILL state through filesystem, terminal, shell, generic file tools or guessed paths. Use `timesheet_plan_active`, `timesheet_plan_list`, `timesheet_plan_sync`, `timesheet_config_get` and `timesheet_learning_context`. Clockify date-range tool arguments must be full ISO-8601 timestamps rather than bare calendar dates.
+"""
+
 
 def state_root() -> Path:
     root = default_state_dir()
@@ -92,6 +100,13 @@ def ensure_runtime_skill(default_skill: Path) -> Path:
     if not target.exists():
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(default_skill, target)
+    else:
+        try:
+            current = target.read_text(encoding="utf-8")
+        except OSError:
+            current = ""
+        if current and _SKILL_GUARD_MARKER not in current:
+            _atomic_write_text(target, current.rstrip() + _SKILL_GUARD)
     return target
 
 
