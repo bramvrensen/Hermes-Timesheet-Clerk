@@ -77,6 +77,46 @@ def test_duration_edit_reflows_only_later_same_day():
     assert "planned_duration_seconds" in event["changed_fields"]
 
 
+def test_partial_edit_keeps_incomplete_direct_entry_unresolved():
+    plan = sample_plan()
+    entry = plan["entries"][0]
+    entry["booking_mode"] = "direct"
+    entry["assignment"] = {}
+    entry["direct_mapping"] = {"customer_id": "customer-only"}
+    updated, _, reviewed = apply_review(plan, "a", {"planned_duration_seconds": 1800})
+    assert reviewed.get("review_state") is None
+    repo_plan = deepcopy(updated)
+    # Contract validation must accept the still-pending PROPOSE entry.
+    repo = PlanRepository.__new__(PlanRepository)
+    from timesheet_clerk.contracts import validate_plan
+    validate_plan(repo_plan)
+
+
+def test_restore_skipped_incomplete_entry_reopens_review():
+    plan = sample_plan()
+    entry = plan["entries"][0]
+    entry["booking_mode"] = "direct"
+    entry["assignment"] = {}
+    entry["direct_mapping"] = {}
+    entry["ignored"] = True
+    entry["review_state"] = "skipped"
+    _, _, reviewed = apply_review(plan, "a", {"ignored": False})
+    assert reviewed.get("review_state") is None
+
+
+def test_working_revision_history_is_bounded(tmp_path, monkeypatch):
+    monkeypatch.setenv("TIMESHEET_CLERK_REVISION_RETENTION", "3")
+    repo = PlanRepository(tmp_path)
+    repo.create(sample_plan())
+    for expected in range(1, 6):
+        plan = repo.get_active()
+        plan["target_hours"] = 36.0 + expected
+        repo.save_revision(plan, expected_revision=expected)
+    paths = repo._revision_paths("2026-W34-test")
+    assert len(paths) == 3
+    assert paths[-1].name == "revision-0006.json"
+
+
 def test_approval_requires_review_of_propose(tmp_path):
     repo = PlanRepository(tmp_path)
     repo.create(sample_plan())
