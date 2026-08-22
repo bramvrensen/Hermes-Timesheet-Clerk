@@ -4,13 +4,14 @@ import os
 from pathlib import Path
 from typing import Any
 from .config import SimplicateConfig
+from .runtime import read_config
 from .simplicate import SimplicateClient
 
 _REQUIRED=("SIMPLICATE_BASE_URL","SIMPLICATE_API_KEY","SIMPLICATE_API_SECRET","SIMPLICATE_EMPLOYEE_ID")
 
 def _load_planner_profile_env()->None:
     if all(str(os.environ.get(key) or "").strip() for key in _REQUIRED):return
-    profile=os.environ.get("TIMESHEET_CLERK_PLANNER_PROFILE") or "atlas"
+    profile=str(read_config().get("planner_profile") or "atlas")
     profile_env=Path(os.environ.get("HERMES_PROFILE_ENV") or f"/home/hermes/.hermes/profiles/{profile}/.env")
     if not profile_env.is_file():return
     for raw in profile_env.read_text(encoding="utf-8").splitlines():
@@ -27,8 +28,6 @@ def load_review_context(start_date:str,end_date:str)->dict[str,list[dict[str,Any
     projects=[_normalize_project(r) for r in client.get_projects() if isinstance(r,dict)];projects=[r for r in projects if r.get("id")]
     services=[_normalize_service(r) for r in client.get_services() if isinstance(r,dict)];services=[r for r in services if r.get("id")]
     hour_types=[_normalize_hour_type(r) for r in client.get_hour_types() if isinstance(r,dict)];hour_types=[r for r in hour_types if r.get("id")]
-    # UI policy: hour type is tenant-global and deliberately independent from
-    # selected customer/project/service. Deduplicate by ID and keep the label.
     all_hour_types=[];seen_global=set()
     for row in hour_types:
         if row["id"] in seen_global:continue
