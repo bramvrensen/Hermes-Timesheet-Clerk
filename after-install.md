@@ -2,7 +2,7 @@
 
 ## Integration keys
 
-Configure these through HERMES Keys / plugin installation:
+Configure through HERMES Keys / plugin installation:
 
 ```text
 CLOCKIFY_API_KEY
@@ -14,47 +14,64 @@ SIMPLICATE_API_SECRET
 SIMPLICATE_EMPLOYEE_ID
 ```
 
-Optional integration setting:
+Also configure a frontend password:
+
+```text
+TIMESHEET_CLERK_UI_PASSWORD
+```
+
+Optional:
 
 ```text
 CLOCKIFY_BASE_URL=https://api.clockify.me/api/v1
+HERMES_PROFILE_ENV=/home/hermes/.hermes/profiles/atlas/.env
 ```
 
-Reload/restart HERMES after installing or updating the plugin.
+## Shared state
 
-## 0.2.0 validation
+0.4.0 defaults to agent-independent state:
 
-First confirm the integration tools:
+```text
+/home/hermes/.hermes/timesheet-clerk
+```
 
+Do not point normal operation back at `/home/hermes/.hermes/profiles/atlas/timesheet-clerk`. Existing Atlas-scoped state is migrated automatically when the shared directory does not yet exist.
+
+An explicit `TIMESHEET_CLERK_STATE_DIR` override is still supported when needed.
+
+## Validate the plugin
+
+Confirm the runtime exposes at least:
+
+- `timesheet_config_get`
 - `timesheet_clockify_entries`
 - `timesheet_simplicate_assignments`
 - `timesheet_simplicate_booking_assignments`
 - `timesheet_simplicate_booked_hours`
-
-Then ask HERMES to prepare a real weekly Timesheet Clerk plan. The skill should gather context/evidence and persist a new revision-1 plan with `timesheet_plan_create`.
-
-Confirm it exists with:
-
+- `timesheet_plan_sync`
 - `timesheet_plan_active`
-- `timesheet_plan_list`
 
-## Streamlit
+Repeated planning runs should use `timesheet_plan_sync`, not create a brand-new plan for every run.
 
-Mutable plan/feedback state defaults to:
+## Frontend
 
-```text
-$HERMES_HOME/timesheet-clerk
-```
+Normal deployment should use the dedicated Compose service and `frontend/managed_launcher.py`. That gives automatic startup/restart and enables the Configuration-page `Restart frontend` button.
 
-Set `TIMESHEET_CLERK_STATE_DIR` only when a different persistent path is required.
+See [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) for the Compose, Caddy, shared-volume and update notes.
 
-Set a frontend password and start Streamlit from the installed plugin/repository directory:
+Manual troubleshooting fallback:
 
 ```bash
-export TIMESHEET_CLERK_UI_PASSWORD='choose-a-password'
-streamlit run frontend/app.py --server.address 127.0.0.1 --server.port 8501
+cd /home/hermes/.hermes/plugins/timesheet-clerk
+TIMESHEET_CLERK_UI_PASSWORD='<secret>' \
+TIMESHEET_CLERK_STATE_DIR=/home/hermes/.hermes/timesheet-clerk \
+python frontend/managed_launcher.py
 ```
 
-Keep Streamlit on localhost and expose it through the intended `/timesheet` Caddy route/login setup.
+## Runtime configuration
 
-The 0.2.0 UI supports review, corrections, feedback and immutable approval snapshots. **Simplicate writes are still intentionally disabled.**
+Use the frontend Configuration page for planner profile, contract hours, confidence thresholds, preferred valid hour type (`Senior Consultant` by default) and retention.
+
+Use the SKILL page to edit the live runtime `SKILL.md`. Saving it writes outside Git and triggers `/reload-skills` for the configured planner profile.
+
+Simplicate write execution is still intentionally disabled until the controlled write path is validated.
