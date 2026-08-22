@@ -7,13 +7,49 @@ requiring the agent to duplicate masterdata into booking_plan.json.
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
 from typing import Any
 
 from .config import SimplicateConfig
 from .simplicate import SimplicateClient
 
+_REQUIRED = (
+    "SIMPLICATE_BASE_URL",
+    "SIMPLICATE_API_KEY",
+    "SIMPLICATE_API_SECRET",
+    "SIMPLICATE_EMPLOYEE_ID",
+)
+
+
+def _load_atlas_profile_env() -> None:
+    """Load missing Simplicate values from the Atlas profile .env for standalone UI runs.
+
+    HERMES injects profile keys into plugin tool calls, but a standalone Streamlit
+    process does not inherit those values. Only missing variables are filled and
+    no secret values are logged or exposed to the browser.
+    """
+    if all(str(os.environ.get(key) or "").strip() for key in _REQUIRED):
+        return
+    profile_env = Path(os.environ.get("HERMES_PROFILE_ENV") or "/home/hermes/.hermes/profiles/atlas/.env")
+    if not profile_env.is_file():
+        return
+    for raw in profile_env.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if key not in _REQUIRED or os.environ.get(key):
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
+        os.environ[key] = value
+
 
 def load_review_context(start_date: str, end_date: str) -> dict[str, list[dict[str, Any]]]:
+    _load_atlas_profile_env()
     client = SimplicateClient(SimplicateConfig.from_env())
     projects_raw = client.get_projects()
     services_raw = client.get_services()
