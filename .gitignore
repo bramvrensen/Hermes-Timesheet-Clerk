@@ -1,0 +1,10 @@
+# Python bytecode/cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Test/tool caches
+.pytest_cache/
+.uv-cache/
+.coverage
+htmlcov/
