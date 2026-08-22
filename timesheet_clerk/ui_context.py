@@ -26,6 +26,7 @@ def load_review_context(start_date:str,end_date:str)->dict[str,list[dict[str,Any
     projects=[_normalize_project(r) for r in client.get_projects() if isinstance(r,dict)]; projects=[r for r in projects if r.get("id")]
     services=[_normalize_service(r) for r in client.get_services() if isinstance(r,dict)]; services=[r for r in services if r.get("id")]
     hour_types=[_normalize_hour_type(r) for r in client.get_hour_types() if isinstance(r,dict)]; hour_types=[r for r in hour_types if r.get("id")]
+    hour_type_names={r["id"]:r.get("name") for r in hour_types if r.get("id") and r.get("name")}
     assignments=client.get_booking_assignments(start_date,end_date)
     customers={}
     for p in projects:
@@ -38,7 +39,8 @@ def load_review_context(start_date:str,end_date:str)->dict[str,list[dict[str,Any
         if not sid or not hid: continue
         key=(sid,hid)
         if key in seen: continue
-        seen.add(key); scoped.append({"id":hid,"name":_nested_name(ht) or hid,"service_id":sid,"source":"assignment"})
+        seen.add(key)
+        scoped.append({"id":hid,"name":_nested_name(ht) or hour_type_names.get(hid) or hid,"service_id":sid,"source":"assignment"})
     for ht in hour_types:
         sid=ht.get("service_id")
         if sid and (sid,ht["id"]) not in seen: scoped.append(ht); seen.add((sid,ht["id"]))
@@ -57,7 +59,7 @@ def _normalize_hour_type(row):
     return {"id":_plain_id(row.get("id")),"name":row.get("name") or row.get("title") or row.get("label"),"service_id":_plain_id(_nested_id(service) or row.get("projectservice_id") or row.get("service_id")),"source":"masterdata"}
 
 def _nested_id(value): return value.get("id") if isinstance(value,dict) else value
-def _nested_name(value): return (value.get("name") or value.get("title")) if isinstance(value,dict) else None
+def _nested_name(value): return (value.get("name") or value.get("title") or value.get("label")) if isinstance(value,dict) else None
 def _plain_id(value):
     if value is None:return ""
     text=str(value); return text.split(":",1)[1] if ":" in text else text
