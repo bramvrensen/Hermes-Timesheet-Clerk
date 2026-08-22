@@ -1,10 +1,11 @@
 name: timesheet-clerk
-version: 0.3.2
+version: 0.4.0
 description: HERMES Timesheet Clerk tools, plan state and review workflow for Clockify/Simplicate.
 author: Bram van Rensen
 homepage: https://github.com/bramvrensen/Hermes-Timesheet-Clerk
 
 provides_tools:
+  - timesheet_config_get
   - timesheet_clockify_entries
   - timesheet_simplicate_context
   - timesheet_simplicate_assignments
@@ -13,6 +14,7 @@ provides_tools:
   - timesheet_simplicate_debug_assignments
   - timesheet_simplicate_booked_hours
   - timesheet_plan_create
+  - timesheet_plan_sync
   - timesheet_plan_active
   - timesheet_plan_list
   - timesheet_learning_context
