@@ -9,7 +9,7 @@ from typing import Any
 
 import streamlit as st
 
-from .runtime import DEFAULT_CONFIG, purge_expired_artifacts, read_config, read_runtime_skill, write_config, write_runtime_skill
+from .runtime import purge_expired_artifacts, read_config, read_runtime_skill, write_config, write_runtime_skill
 from .storage import PlanRepository
 
 
@@ -20,6 +20,7 @@ def render_config(repo: PlanRepository, default_skill: Path) -> None:
     with c1:
         planner_profile = st.text_input("Planner profile", value=str(cfg["planner_profile"]))
         contract_hours = st.number_input("Default contract hours", min_value=0.0, step=0.5, value=float(cfg["contract_hours_default"]))
+        preferred_hour_type = st.text_input("Preferred hour type", value=str(cfg.get("preferred_hour_type") or ""), help="Preferred valid hour type for direct mappings, e.g. Senior Consultant.")
         auto_threshold = st.slider("AUTO confidence threshold", 0, 100, int(round(float(cfg["auto_confidence_threshold"]) * 100)))
         propose_threshold = st.slider("PROPOSE confidence threshold", 0, 100, int(round(float(cfg["propose_confidence_threshold"]) * 100)))
     with c2:
@@ -36,6 +37,7 @@ def render_config(repo: PlanRepository, default_skill: Path) -> None:
             **cfg,
             "planner_profile": planner_profile,
             "contract_hours_default": contract_hours,
+            "preferred_hour_type": preferred_hour_type,
             "auto_confidence_threshold": auto_threshold / 100.0,
             "propose_confidence_threshold": propose_threshold / 100.0,
             "prefer_planned_assignment": prefer_planned,
@@ -62,12 +64,7 @@ def render_skill(repo: PlanRepository, default_skill: Path) -> None:
         write_runtime_skill(edited, default_skill)
         cfg = read_config()
         profile = str(cfg.get("planner_profile") or "atlas")
-        result = subprocess.run(
-            ["hermes", "-p", profile, "chat", "-q", "/reload-skills"],
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
+        result = subprocess.run(["hermes", "-p", profile, "chat", "-q", "/reload-skills"], capture_output=True, text=True, timeout=60)
         if result.returncode == 0:
             st.success(f"SKILL saved and /reload-skills executed for {profile}.")
         else:
@@ -79,58 +76,28 @@ def render_skill(repo: PlanRepository, default_skill: Path) -> None:
 def render_state(repo: PlanRepository, selected_plan: dict[str, Any] | None, review_context: dict[str, Any] | None = None) -> None:
     st.subheader("State inspector")
     tabs = st.tabs(["Active plan", "Revisions", "Mappings", "Rules", "Feedback", "Approvals", "Receipts", "Logs"])
-
-    with tabs[0]:
-        if selected_plan:
-            st.json(selected_plan, expanded=False)
-        else:
-            st.info("No selected plan.")
-
+    with tabs[0]: st.json(selected_plan, expanded=False) if selected_plan else st.info("No selected plan.")
     with tabs[1]:
         if selected_plan:
-            plan_id = selected_plan["plan_id"]
-            paths = repo._revision_paths(plan_id)
-            st.caption(f"{len(paths)} revision file(s)")
+            paths = repo._revision_paths(selected_plan["plan_id"]); st.caption(f"{len(paths)} revision file(s)")
             for path in reversed(paths):
-                with st.expander(path.name):
-                    st.code(path.read_text(encoding="utf-8"), language="json")
-
-    with tabs[2]:
-        payload = review_context if review_context is not None else (selected_plan or {}).get("review_context") or {}
-        st.json(payload, expanded=False)
-
-    with tabs[3]:
-        st.json(repo.read_rules(), expanded=False)
-
-    with tabs[4]:
-        st.json(repo.feedback(limit=500), expanded=False)
-
-    with tabs[5]:
-        paths = sorted(repo.approvals_dir.glob("*.json"), reverse=True)
-        _render_files(paths)
-
-    with tabs[6]:
-        paths = sorted(repo.receipts_dir.glob("*.json"), reverse=True)
-        _render_files(paths)
-
+                with st.expander(path.name): st.code(path.read_text(encoding="utf-8"), language="json")
+    with tabs[2]: st.json(review_context if review_context is not None else (selected_plan or {}).get("review_context") or {}, expanded=False)
+    with tabs[3]: st.json(repo.read_rules(), expanded=False)
+    with tabs[4]: st.json(repo.feedback(limit=500), expanded=False)
+    with tabs[5]: _render_files(sorted(repo.approvals_dir.glob("*.json"), reverse=True))
+    with tabs[6]: _render_files(sorted(repo.receipts_dir.glob("*.json"), reverse=True))
     with tabs[7]:
-        log_dir = repo.root / "logs"
-        paths = sorted(log_dir.glob("*.log"), reverse=True) if log_dir.exists() else []
-        if not paths:
-            st.info("No logs yet.")
+        log_dir = repo.root / "logs"; paths = sorted(log_dir.glob("*.log"), reverse=True) if log_dir.exists() else []
+        if not paths: st.info("No logs yet.")
         for path in paths:
-            with st.expander(path.name):
-                text = path.read_text(encoding="utf-8", errors="replace")
-                st.code(text[-20000:])
+            with st.expander(path.name): st.code(path.read_text(encoding="utf-8", errors="replace")[-20000:])
 
 
 def _render_files(paths: list[Path]) -> None:
     if not paths:
-        st.info("No files.")
-        return
+        st.info("No files."); return
     for path in paths:
         with st.expander(path.name):
-            try:
-                st.json(json.loads(path.read_text(encoding="utf-8")), expanded=False)
-            except Exception:
-                st.code(path.read_text(encoding="utf-8", errors="replace"))
+            try: st.json(json.loads(path.read_text(encoding="utf-8")), expanded=False)
+            except Exception: st.code(path.read_text(encoding="utf-8", errors="replace"))
