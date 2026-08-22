@@ -1,124 +1,128 @@
 # Implementation status
 
-This document records implementation facts that are more concrete than the functional design. `DESIGN.md` remains the source of truth for intended behaviour.
+This document records concrete implementation facts. `DESIGN.md` remains the functional source of truth. Deployment details live in `DEPLOYMENT.md`.
 
-## 0.2.0 review foundation
+## 0.4.0 architecture
 
 Implemented on `main`:
 
-- native HERMES directory-plugin entrypoint and `timesheet_clerk` toolset;
-- bundled skill at `skills/productivity/timesheet-clerk/SKILL.md`;
-- Clockify REST reads for normalized time entries;
-- Simplicate REST reads for active projects, services, hour types, planned assignments, booking assignments and booked hours;
-- tenant-validated assignment normalization;
-- versioned booking-plan contract validation in `timesheet_clerk/contracts.py`;
-- atomic immutable-per-revision plan persistence in `timesheet_clerk/storage.py`;
-- optimistic revision checking so an opened plan cannot silently overwrite a newer review revision;
-- an explicit active-plan pointer stored outside the plugin install directory;
-- append-only `feedback_events.jsonl` storage;
-- rule storage that only persists agent-derived rules and never infers/promotes them itself;
-- immutable approval snapshots;
-- booking-receipt storage primitive for the later write flow;
-- deterministic same-day timeline reflow after duration edits;
-- Streamlit review UI with its own login, editable weekly target hours, per-entry review, assignment override, direct-mapping cascade from normalized review context, feedback capture and approval snapshot creation;
-- Simplicate write execution is still intentionally disabled.
+- native HERMES directory plugin and `timesheet_clerk` toolset;
+- Clockify and Simplicate live reads;
+- planned-assignment and booking-assignment normalization;
+- weekly working-plan synchronization through `timesheet_plan_sync`;
+- one open working plan per week instead of one new plan per planner run;
+- planner syncs mutate/append the open week without creating review-history revisions;
+- human review changes create revisions and use optimistic locking;
+- reviewed entries are preserved across later planner syncs;
+- immediate skip/restore review state;
+- same-day timeline reflow after duration edits;
+- immutable approval snapshots and booking receipt storage primitives;
+- append-only feedback and persisted learned rules;
+- runtime policy through `timesheet_config_get`;
+- editable runtime `SKILL.md` outside Git with `/reload-skills` on save;
+- agent-independent shared runtime state;
+- Streamlit Review / Configuration / SKILL / State sections;
+- week/day views and visible planned start/end times;
+- cascading direct mapping Customer → Project → Task/Service → Hour Type;
+- service/hour-type filtering derived from validated Simplicate assignment relationships;
+- preferred valid direct-mapping Hour Type in runtime config, default `Senior Consultant`;
+- configurable planner profile, allowing later `atlas` → `atlas-worker` migration without state migration;
+- 365-day default retention for booked approval snapshots/receipts;
+- managed frontend launcher and admin-triggered frontend restart request.
 
-### HERMES tools
-
-Read/integration tools:
-
-- `timesheet_clockify_entries`
-- `timesheet_simplicate_context`
-- `timesheet_simplicate_assignments`
-- `timesheet_simplicate_booking_assignments`
-- `timesheet_simplicate_available_assignments` (deprecated compatibility alias)
-- `timesheet_simplicate_debug_assignments` (temporary diagnostic)
-- `timesheet_simplicate_booked_hours`
-
-Plan/learning tools:
-
-- `timesheet_plan_create`
-- `timesheet_plan_active`
-- `timesheet_plan_list`
-- `timesheet_learning_context`
-
-`timesheet_plan_create` validates and atomically stores a complete agent-produced revision-1 plan. It does not decide mappings, confidence or autonomy.
+Simplicate writes remain intentionally disabled pending controlled write validation.
 
 ## State directory
 
-Mutable state is never written inside the Git-installed plugin directory. Default location:
+Default 0.4.0 state root:
 
 ```text
-$HERMES_HOME/timesheet-clerk/
-├── active_plan.json
-├── plans/<plan-id>/revision-0001.json
-├── approvals/<plan-id>-rNNNN.json
-├── feedback_events.jsonl
-├── rules.json
-└── receipts/
+/home/hermes/.hermes/timesheet-clerk
 ```
 
-Override with:
+It is independent of the configured planner profile. On startup, when the shared state does not yet exist, the package migrates the legacy Atlas-scoped directory:
 
 ```text
-TIMESHEET_CLERK_STATE_DIR=/custom/path
+/home/hermes/.hermes/profiles/atlas/timesheet-clerk
 ```
 
-This keeps plans and learning history intact across plugin updates.
+An explicit `TIMESHEET_CLERK_STATE_DIR` still overrides the default.
 
-## Plan contract
-
-Current `schema_version` is `1`. New agent plans start as revision `1`, status `DRAFT`, with the 36-hour contract default and an independently editable `target_hours`.
-
-Draft/review plans may contain intentionally unresolved targets for `ASK`/`PROPOSE` entries. `AUTO` entries must be complete. A reviewed entry must be complete before approval.
-
-The agent should include normalized `review_context` in the plan so Streamlit can render deterministic override controls without doing mapping work itself. Recommended keys:
+State contains:
 
 ```text
-booking_assignments
-customers
-projects
-services
-hour_types
+config.json
+SKILL.md
+active_plan.json
+plans/
+approvals/
+receipts/
+feedback_events.jsonl
+rules.json
+logs/
+frontend-restart.request   # transient, only while restart is requested
 ```
 
-No credentials, API prefixes or private chain-of-thought belong in a plan.
+## Planner/runtime policy
 
-## Review and learning semantics
-
-Streamlit edits one exact plan revision. A material review generates an append-only feedback event containing:
-
-- plan/entry identity;
-- source fingerprint;
-- original proposal;
-- reviewed values;
-- changed fields;
-- optional reason;
-- original mapping source/tiers;
-- outcome (`confirmed`, `corrected`, `skipped`).
-
-The storage layer does not generalize feedback. HERMES reads it through `timesheet_learning_context` and applies the policy from the skill.
-
-A duration edit may shift subsequent planned time slots on the same calendar day only. Entries on another day are never moved by this deterministic UI operation.
-
-## Streamlit
-
-Runtime dependency:
+The planner must call `timesheet_config_get` before planning. Current configurable policy includes:
 
 ```text
-streamlit>=1.48,<2
+planner_profile
+contract_hours_default
+auto_confidence_threshold
+propose_confidence_threshold
+semantic_similarity_auto_allowed
+require_strong_evidence_for_auto
+prefer_planned_assignment
+preferred_hour_type
+booked_artifact_retention_days
+purge_after_successful_booking
 ```
 
-Start from the repository/plugin directory:
+`preferred_hour_type` is a preference only among valid direct-mapping Hour Types for the selected service. It never overrides an assignment-derived Hour Type.
 
-```bash
-TIMESHEET_CLERK_UI_PASSWORD='<secret>' \
-streamlit run frontend/app.py --server.address 127.0.0.1 --server.port 8501
+## Weekly sync semantics
+
+`timesheet_plan_sync` is the normal repeated-run persistence path.
+
+For an existing open week it:
+
+- appends newly discovered Clockify source entries;
+- refreshes changed source context;
+- preserves confirmed/corrected/skipped human review values;
+- keeps the same review revision number for planner-only synchronization.
+
+Human review changes use the revisioned storage path. Approval creates an immutable snapshot.
+
+## Streamlit frontend
+
+The frontend currently provides:
+
+- password login with persistent browser cookie;
+- week/day navigation;
+- planned time range and duration visibility;
+- AUTO/PROPOSE/ASK/BOOKED/SKIP presentation;
+- immediate skip/restore action;
+- duration controls including zero-hour entries;
+- assignment and direct-mapping review;
+- runtime configuration editor;
+- editable live SKILL;
+- state inspector for plans, revisions, mappings, rules, feedback, approvals, receipts and logs;
+- purge action;
+- frontend restart request action.
+
+`frontend/managed_launcher.py` runs Streamlit as a child process and watches the shared state for `frontend-restart.request`. The recommended Compose service uses this launcher so the admin restart button does not need access to the Docker socket.
+
+## Deployment
+
+The intended deployment is a dedicated `timesheet-clerk-ui` Compose service sharing the same persistent `/home/hermes/.hermes` volume as the Hermes runtime and using:
+
+```text
+python /home/hermes/.hermes/plugins/timesheet-clerk/frontend/managed_launcher.py
 ```
 
-The intended external route remains `/timesheet` behind Caddy/auth. Streamlit should only listen locally. Caddy configuration is deployment technology, not business logic.
-
-The UI currently creates approval snapshots but deliberately does not execute Simplicate writes.
+Caddy proxies `/timesheet` to the Streamlit service. Detailed Compose/Caddy/update notes are in `docs/DEPLOYMENT.md`.
 
 ## Required integration environment
 
@@ -130,102 +134,22 @@ SIMPLICATE_BASE_URL
 SIMPLICATE_API_KEY
 SIMPLICATE_API_SECRET
 SIMPLICATE_EMPLOYEE_ID
+TIMESHEET_CLERK_UI_PASSWORD
 ```
 
-Optional:
+The standalone frontend can load missing Simplicate values from `HERMES_PROFILE_ENV`. This is currently a credential-source detail only; it does not make Timesheet Clerk state or planner ownership Atlas-specific.
 
-```text
-CLOCKIFY_BASE_URL=https://api.clockify.me/api/v1
-TIMESHEET_CLERK_STATE_DIR=/path
-TIMESHEET_CLERK_UI_PASSWORD=<secret>
-```
+## Retention
 
-## Skill discovery
+While a week is open, required working/review state remains available. After successful booking, the intended retained audit evidence is the exact approved snapshot used for booking plus booking receipts. Default retention is 365 days. Feedback and learned rules remain long-lived learning state.
 
-The skill file follows the normal Hermes category layout:
+## Remaining write milestone
 
-```text
-skills/productivity/timesheet-clerk/SKILL.md
-```
-
-Because it is bundled by a plugin and registered through `ctx.register_skill(...)`, the runtime-qualified name remains:
-
-```text
-timesheet-clerk:timesheet-clerk
-```
-
-The skill now explicitly instructs the agent that `timesheet_*` names are tools, not skills/scripts, and forbids terminal/direct-REST fallbacks while the plugin toolset is available.
-
-## Simplicate assignment facts validated in the live tenant
-
-```text
-employees[]                  -> assigned employees
-status.is_blocked            -> blocked state
-status.is_done               -> completed state
-is_planned                   -> explicit planning flag
-project                      -> project object
-project.organization         -> customer/organization
-projectservice               -> task/service
-projecthourstype             -> hour type
-hours_type                   -> secondary hour-type field
-hours / hours_total          -> assignment hour values
-```
-
-Planned assignments require employee membership, active status, `is_planned = true`, both dates and date overlap.
-
-Booking assignments require employee membership, active assignment/project, a project service with `use_in_resource_planner = true`, and overlap when dated. Undated candidates can be booking targets but are never planning evidence by themselves.
-
-## Hermes/WebUI runtime finding
-
-The separate `nesquena/hermes-webui` container initially used its own legacy agent runtime even though `HERMES_API_URL` pointed at the Hermes API server. That caused plugin-tool discovery to differ from CLI/dashboard/Discord.
-
-The working deployment explicitly selects the Hermes gateway backend:
-
-```text
-HERMES_WEBUI_CHAT_BACKEND=gateway
-HERMES_WEBUI_GATEWAY_BASE_URL=http://hermes-agent:8642
-```
-
-and the Atlas profile grants the plugin to the API platform:
-
-```yaml
-platform_toolsets:
-  api_server:
-    - hermes-api-server
-    - timesheet_clerk
-```
-
-With this configuration CLI, Discord and the separate WebUI all execute the same native Timesheet Clerk tools.
-
-## Validation status
-
-Validated live:
-
-- plugin installs and updates from GitHub;
-- `timesheet_clockify_entries` returns live entries;
-- planned assignments match the Simplicate planning view;
-- booking assignments are recognizable and normalized correctly;
-- CLI, Discord and separate WebUI can directly execute the plugin tools.
-
-Implemented but still requiring deployment validation:
-
-- plan creation through `timesheet_plan_create`;
-- plan revision conflict handling against a live HERMES state directory;
-- Streamlit review flow and login;
-- append-only feedback generation;
-- immutable approval snapshot.
-
-Intentionally not implemented yet:
+Still intentionally not enabled:
 
 - Simplicate assignment/direct write capabilities;
-- idempotent batch booking execution;
-- controlled write activation.
+- deterministic one-entry controlled booking;
+- idempotent day/week batch execution;
+- post-booking compaction tied to confirmed receipts.
 
-## Next technical validation
-
-1. Update the plugin to 0.2.0 and restart/reload Hermes.
-2. Ask HERMES to generate one real week plan and persist it with `timesheet_plan_create`.
-3. Start Streamlit locally and review that plan.
-4. Confirm a correction produces a new plan revision plus one feedback event.
-5. Confirm approval creates an immutable snapshot.
-6. Only then validate Simplicate write semantics against a controlled live booking.
+The next write validation should start with one approved entry, verify the exact Simplicate payload/response, persist a receipt, then expand to day/week batching.
