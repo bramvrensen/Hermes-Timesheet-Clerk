@@ -4,7 +4,7 @@ This document records the deployment details that were easy to get wrong while w
 
 ## Shared state
 
-Timesheet Clerk state is agent-independent in 0.4.0. Unless `TIMESHEET_CLERK_STATE_DIR` is explicitly set, the runtime uses:
+Timesheet Clerk state is agent-independent in 0.4.x. Unless `TIMESHEET_CLERK_STATE_DIR` is explicitly set, the runtime uses:
 
 ```text
 /home/hermes/.hermes/timesheet-clerk
@@ -61,7 +61,7 @@ timesheet-clerk-ui:
     TIMESHEET_CLERK_UI_PORT: "8501"
     TIMESHEET_CLERK_UI_BASE_PATH: timesheet
     HERMES_PROFILE_ENV: /home/hermes/.hermes/profiles/atlas/.env
-  command:
+  entrypoint:
     - python
     - /home/hermes/.hermes/plugins/timesheet-clerk/frontend/managed_launcher.py
 ```
@@ -72,6 +72,8 @@ Notes:
 - The entire `/home/hermes/.hermes` tree must be the same persistent volume the Hermes runtime uses. Otherwise the frontend sees a different plugin checkout/state tree.
 - `HERMES_PROFILE_ENV` is currently only used to load missing integration environment values for standalone UI reads. Planner ownership itself is controlled by runtime config and can be changed to `atlas-worker`.
 - The managed launcher watches `/home/hermes/.hermes/timesheet-clerk/frontend-restart.request`. The Configuration page writes this marker when `Restart frontend` is clicked.
+- The launcher is PID 1 in the dedicated frontend container and explicitly reaps completed adopted child processes. This prevents background planner runs from accumulating as `<defunct>` zombie processes.
+- With the Hermes image, use `entrypoint:` rather than `command:` for the launcher. The normal image entrypoint starts the Hermes gateway and otherwise creates a second Hermes runtime inside the UI container.
 
 If the existing Compose stack does not expose an `${HERMES_IMAGE}` variable, replace it with the exact image already used by the current `hermes-agent` service.
 
@@ -114,11 +116,42 @@ TIMESHEET_CLERK_UI_PASSWORD
 
 The standalone frontend loads missing Simplicate values from `HERMES_PROFILE_ENV`. Do not copy API secrets into the repository or runtime config JSON.
 
+## Hermes profile cleanup
+
+Warnings printed while invoking the Hermes CLI usually come from the live profile rather than this repository. Two examples seen during deployment were:
+
+```text
+Warning: Unknown toolsets: fetch-json, timesheet_clerk
+```
+
+and:
+
+```text
+Deprecated .env settings detected: TERMINAL_CWD=/opt/hermes
+```
+
+Treat these as profile-configuration issues:
+
+1. inspect `/home/hermes/.hermes/profiles/<profile>/config.yaml` for configured toolsets;
+2. compare those names with toolsets actually registered by the current Hermes/plugin runtime;
+3. remove stale/renamed toolset entries instead of suppressing the warning;
+4. move the deprecated `TERMINAL_CWD` value from `.env` into `config.yaml` as:
+
+```yaml
+terminal:
+  cwd: /opt/hermes
+```
+
+5. remove `TERMINAL_CWD=...` from the profile `.env` only after `config.yaml` contains the replacement;
+6. restart/reload the affected profile and confirm the warnings are gone.
+
+Do not make these profile edits from the Timesheet Clerk Git repository. The profile is mutable deployment state.
+
 ## Updating the plugin
 
 The dashboard and shell may point at different plugin clones if the deployment has been wired incorrectly. Before debugging a version mismatch, verify which checkout each runtime actually uses.
 
-Canonical deployment target for 0.4.0 is:
+Canonical deployment target for 0.4.x is:
 
 ```text
 /home/hermes/.hermes/plugins/timesheet-clerk
