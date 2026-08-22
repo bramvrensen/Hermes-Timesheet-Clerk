@@ -2,9 +2,19 @@
 
 Human-in-the-loop timesheet planning and booking for HERMES Agent.
 
-> Status: **0.4.1 planning/review architecture.** Live Clockify/Simplicate reads, weekly sync, runtime policy, editable runtime skill, review UI, feedback, approval snapshots and retention exist. Simplicate writes remain deliberately disabled until the booking path is validated.
+> Status: **0.4.2 review UX stabilization.** Live Clockify/Simplicate reads, weekly sync, runtime policy, editable runtime skill, review UI, feedback, approval snapshots and retention exist. Simplicate writes remain deliberately disabled until the booking path is validated.
 
 See [`docs/DESIGN.md`](docs/DESIGN.md) for functional design, [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md) for implementation status and [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) for the VPS/Compose/Caddy setup.
+
+## 0.4.2 fixes
+
+- entry review is isolated in Streamlit fragments so customer/project/task/hour-type filtering and review actions no longer rerender the complete page;
+- skipped unresolved PROPOSE/ASK entries can be restored without being incorrectly marked as fully corrected;
+- Day view resets stale date-widget state correctly and uses the selected date as a hard filter;
+- week-level approve/book controls are hidden in Day view;
+- scoped hour-type choices resolve their display name from Simplicate masterdata when assignment payloads expose only an ID;
+- a native, theme-compatible loading indicator is shown while review context is loaded;
+- the managed frontend launcher reaps adopted child processes so completed background planner runs do not accumulate as `<defunct>` zombies.
 
 ## 0.4.1 fixes
 
@@ -97,7 +107,7 @@ The frontend provides:
 - immediate skip/restore behaviour;
 - duration edits with same-day timeline reflow;
 - assignment override;
-- cascading direct mapping;
+- cascading direct mapping with entry-local rerenders;
 - editable runtime SKILL with automatic `/reload-skills` invocation;
 - read-only state inspector for plans, revisions, mappings, rules, feedback, approvals, receipts and logs;
 - separate planner sync and frontend refresh controls;
