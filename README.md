@@ -2,9 +2,18 @@
 
 Human-in-the-loop timesheet planning and booking for HERMES Agent.
 
-> Status: **0.4.0 planning/review architecture.** Live Clockify/Simplicate reads, weekly sync, runtime policy, editable runtime skill, review UI, feedback, approval snapshots and retention exist. Simplicate writes remain deliberately disabled until the booking path is validated.
+> Status: **0.4.1 planning/review architecture.** Live Clockify/Simplicate reads, weekly sync, runtime policy, editable runtime skill, review UI, feedback, approval snapshots and retention exist. Simplicate writes remain deliberately disabled until the booking path is validated.
 
 See [`docs/DESIGN.md`](docs/DESIGN.md) for functional design, [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md) for implementation status and [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) for the VPS/Compose/Caddy setup.
+
+## 0.4.1 fixes
+
+- planner sync is explicitly tool-only for Timesheet Clerk state; filesystem/file-search fallbacks are forbidden;
+- Clockify range arguments are required to use full ISO-8601 timestamps;
+- the live runtime SKILL receives the 0.4.1 state-access guard non-destructively on first load;
+- Day view uses a real week-bounded date picker and hard-filters the selected calendar date;
+- stale Streamlit elements are hidden during reruns to avoid duplicated/faded headers;
+- `Generate / refresh plan` and `Refresh view` are separate actions so agent synchronization and frontend state reload are no longer conflated.
 
 ## Principles
 
@@ -18,7 +27,7 @@ See [`docs/DESIGN.md`](docs/DESIGN.md) for functional design, [`docs/IMPLEMENTAT
 
 ## Shared state
 
-0.4.0 is agent-independent. The default runtime state root is:
+The runtime is agent-independent. The default runtime state root is:
 
 ```text
 /home/hermes/.hermes/timesheet-clerk
@@ -82,6 +91,7 @@ The frontend provides:
 
 - persistent login;
 - week/day views;
+- week-bounded date picker in Day view;
 - visible planned start/end times;
 - review of AUTO/PROPOSE/ASK entries;
 - immediate skip/restore behaviour;
@@ -90,6 +100,7 @@ The frontend provides:
 - cascading direct mapping;
 - editable runtime SKILL with automatic `/reload-skills` invocation;
 - read-only state inspector for plans, revisions, mappings, rules, feedback, approvals, receipts and logs;
+- separate planner sync and frontend refresh controls;
 - maintenance actions including purge and managed frontend restart.
 
 The Hour Type selector is filtered through valid service/hour-type relationships. `preferred_hour_type` is a preference only among valid choices and never overrides an assignment-derived hour type.
