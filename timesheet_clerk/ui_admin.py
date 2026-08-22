@@ -9,12 +9,14 @@ from typing import Any
 
 import streamlit as st
 
+from . import __version__
 from .runtime import purge_expired_artifacts, read_config, read_runtime_skill, write_config, write_runtime_skill
 from .storage import PlanRepository
 
 
 def render_config(repo: PlanRepository, default_skill: Path) -> None:
     st.subheader("Configuration")
+    st.caption(f"Timesheet Clerk v{__version__}")
     cfg = read_config()
     c1, c2 = st.columns(2)
     with c1:
