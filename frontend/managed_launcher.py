@@ -2,6 +2,10 @@
 
 Runs Streamlit as a child process and restarts it when the admin UI writes the
 shared-state restart marker. Intended as the command for the Compose service.
+
+Because this launcher is PID 1 in the dedicated frontend container, it also
+reaps completed orphaned child processes (for example background planner runs)
+so they do not accumulate as zombies.
 """
 
 from __future__ import annotations
@@ -31,12 +35,25 @@ def command() -> list[str]:
     ]
 
 
+def _reap_orphans() -> None:
+    """Reap any exited children adopted by PID 1 without blocking."""
+    while True:
+        try:
+            pid, _status = os.waitpid(-1, os.WNOHANG)
+        except ChildProcessError:
+            return
+        if pid == 0:
+            return
+
+
 def main() -> None:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     while True:
+        _reap_orphans()
         RESTART_FILE.unlink(missing_ok=True)
         child = subprocess.Popen(command(), cwd=PLUGIN_DIR)
         while child.poll() is None:
+            _reap_orphans()
             if RESTART_FILE.exists():
                 RESTART_FILE.unlink(missing_ok=True)
                 child.terminate()
@@ -47,6 +64,7 @@ def main() -> None:
                     child.wait()
                 break
             time.sleep(1)
+        _reap_orphans()
         time.sleep(1)
 
 
