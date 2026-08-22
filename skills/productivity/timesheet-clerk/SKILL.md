@@ -24,6 +24,17 @@ Timesheet Clerk working state is owned by the Timesheet Clerk tools. During plan
 
 Clockify range arguments must use full ISO-8601 timestamps accepted by the Clockify tool. For a calendar week, use explicit start-of-day and end-of-day timestamps for the requested local dates rather than bare `YYYY-MM-DD` strings.
 
+## Clockify source fidelity
+Clockify is authoritative for the source event itself. For every plan entry, keep each Clockify source ID bound to the exact normalized Clockify row returned by `timesheet_clockify_entries`.
+
+- Never move a description, client, project, start, end or duration from one Clockify row to another.
+- `source.description`, `source.client`, `source.project`, `original_duration_seconds` and the source date/time must be copied from the same Clockify row(s) represented by `clockify_source_ids`.
+- For a single-source entry, `original_duration_seconds` must equal that Clockify row's `duration_seconds` exactly.
+- For a single-source entry, initialize `planned_start` and `planned_end` from that row's `start` and `end`; later deterministic review reflow may change planned timing, but generation may not invent or omit source timing.
+- When combining multiple Clockify rows is justified, sum only those exact source durations and preserve all source IDs. Do not combine unrelated meetings merely because their descriptions or clients are similar.
+- Mapping to Simplicate is a separate decision. Changing the proposed Simplicate target must never mutate the Clockify source identity or duration.
+- Before `timesheet_plan_sync`, perform a source-integrity pass over every entry. If any source ID, description, project/client, duration or source timestamp cannot be traced unambiguously to the Clockify response, leave the entry unresolved and fix the plan before syncing.
+
 ## Weekly sync workflow
 1. Determine the requested week and local calendar dates.
 2. Read `timesheet_config_get`.
@@ -36,8 +47,9 @@ Clockify range arguments must use full ISO-8601 timestamps accepted by the Clock
 9. If no suitable planned assignment can be determined, use other evidence and validated booking assignments.
 10. Only when no suitable assignment should be used, fall back to direct customer → project → task/service → hour-type mapping.
 11. Build or refresh the sequential day plan. Never consolidate across calendar-day boundaries.
-12. Persist through `timesheet_plan_sync`. A repeated run in the same open week synchronizes the existing plan rather than creating another plan or human-review revision.
-13. Never book during generation or sync.
+12. Run the Clockify source-integrity pass described above.
+13. Persist through `timesheet_plan_sync`. A repeated run in the same open week synchronizes the existing plan rather than creating another plan or human-review revision.
+14. Never book during generation or sync.
 
 New Clockify entries are appended, changed source entries are refreshed, and human-reviewed values are preserved. Never silently overwrite a confirmed, corrected or skipped entry during a later sync.
 
@@ -50,7 +62,7 @@ A valid Simplicate assignment is preferred because it already represents the emp
 When an assignment is selected, its customer/project/task/hour type are derived context and must not be independently remapped.
 
 ## Direct mapping and hour types
-Direct mapping is hierarchical: customer → project → project task/service → hour type. Never choose an hour type globally before the project service is known. An hour type must be valid for the selected project service. If the integration cannot establish that relationship, leave the hour type unresolved rather than offering or selecting an unrelated global hour type.
+Direct mapping is hierarchical: customer → project → project task/service → hour type. Never choose an hour type globally before the project service is known. Prefer hour-type relationships validated by assignments or explicit service metadata. If Simplicate exposes no scoped relation for a selected service, the review UI may offer global hour types as a manual fallback; that fallback is never sufficient evidence for AUTO.
 
 When multiple valid hour types remain for the selected project service, prefer the runtime-configured `preferred_hour_type`. The current default is `Senior Consultant`, reflecting the user's consulting role. This preference is a tie-breaker only: it must never override assignment-derived hour type, project-service validity, explicit user rules, or stronger scoped evidence.
 
