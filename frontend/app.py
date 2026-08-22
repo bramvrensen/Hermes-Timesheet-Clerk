@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import html
-import subprocess
 import sys
 from copy import deepcopy
 from datetime import date, datetime
@@ -21,6 +20,7 @@ from timesheet_clerk.storage import PlanNotFound, PlanRepository, StateConflict
 from timesheet_clerk.ui_admin import render_config, render_skill, render_state
 from timesheet_clerk.ui_auth import logout, require_login
 from timesheet_clerk.ui_context import load_review_context
+from timesheet_clerk.ui_sync import launch_sync, sync_status
 
 st.set_page_config(page_title="Timesheet Clerk", page_icon="⏱️", layout="wide")
 repo=PlanRepository(); DEFAULT_SKILL=ROOT/"skills"/"productivity"/"timesheet-clerk"/"SKILL.md"
@@ -175,17 +175,22 @@ def _select_plan():
     return repo.get_latest(st.session_state["selected_plan_id"])
 
 def _date_navigator(stored,view):
-    catalog=_catalog(); all_starts=[date.fromisoformat(r["week"]["monday"]) for r in catalog]; all_ends=[date.fromisoformat(r["week"]["sunday"]) for r in catalog]; monday=date.fromisoformat(stored["week"]["monday"]); sunday=date.fromisoformat(stored["week"]["sunday"]); current=st.session_state.get("timesheet_nav_date")
+    catalog=_catalog(); all_starts=[date.fromisoformat(r["week"]["monday"]) for r in catalog]; all_ends=[date.fromisoformat(r["week"]["sunday"]) for r in catalog]; monday=date.fromisoformat(stored["week"]["monday"]); current=st.session_state.get("timesheet_nav_date")
     if not isinstance(current,date) or current<min(all_starts) or current>max(all_ends):st.session_state["timesheet_nav_date"]=monday
-    selected=st.date_input("Go to date",min_value=min(all_starts),max_value=max(all_ends),key="timesheet_nav_date")
-    target=next((r for r in catalog if date.fromisoformat(r["week"]["monday"])<=selected<=date.fromisoformat(r["week"]["sunday"])),None)
+    selected=st.date_input("Go to date",min_value=min(all_starts),max_value=max(all_ends),key="timesheet_nav_date"); target=next((r for r in catalog if date.fromisoformat(r["week"]["monday"])<=selected<=date.fromisoformat(r["week"]["sunday"])),None)
     if target and target["plan_id"]!=stored["plan_id"]:st.session_state["selected_plan_id"]=target["plan_id"]; st.rerun()
     if view=="day":st.session_state["timesheet_selected_day"]=selected.isoformat()
     return selected
 
 def _trigger_atlas(plan):
-    cfg=read_config(); profile=str(cfg.get("planner_profile") or "atlas"); week=plan.get("week") or {}; prompt=(f"Synchronize Timesheet Clerk for {week.get('monday')} through {week.get('sunday')}. FIRST call timesheet_sync_probe with full ISO-8601 week timestamps. If has_changes is false, stop immediately and report only its deterministic summary. Do not load Simplicate, learning context or the full plan. If changes exist, use only source_delta.new_entries and source_delta.changed_entries as Clockify source records, then read config, active plan, learning context and only the Simplicate data needed to map those deltas. Treat every normalized Clockify record as one immutable source bundle: its id, description, client, project, start, end and duration must never be mixed with another source record. Preserve those facts in the plan source. Then call timesheet_plan_sync. Present the deterministic summary returned by the tool; never recalculate counts or totals. Never use filesystem/file-search for Clerk state and never book hours.")
-    log_dir=repo.root/"logs"; log_dir.mkdir(parents=True,exist_ok=True); handle=(log_dir/"planner-refresh.log").open("ab"); subprocess.Popen(["/opt/hermes/.venv/bin/hermes","-p",profile,"chat","-q",prompt],cwd=f"/home/hermes/.hermes/profiles/{profile}",stdout=handle,stderr=subprocess.STDOUT,start_new_session=True); st.success(f"{profile} sync started in background. Use Refresh view when it finishes.")
+    cfg=read_config(); profile=str(cfg.get("planner_profile") or "atlas"); week=plan.get("week") or {}; prompt=(f"Synchronize Timesheet Clerk for {week.get('monday')} through {week.get('sunday')}. FIRST call timesheet_sync_probe with full ISO-8601 week timestamps. If has_changes is false, stop immediately and report only its deterministic summary. Do not load Simplicate, learning context or the full plan. If changes exist, use only source_delta.new_entries and source_delta.changed_entries as Clockify source records, then read config, active plan, learning context and only the Simplicate data needed to map those deltas. Treat every normalized Clockify record as one immutable source bundle: its id, description, client, project, start, end and duration must never be mixed with another source record. Preserve those facts in the plan source. Then call timesheet_plan_sync. Present the deterministic summary returned by the tool; never recalculate counts or totals. Never use filesystem/file-search for Clerk state and never book hours."); launch_sync(root=repo.root,profile=profile,prompt=prompt); st.success(f"{profile} sync started. Status below updates automatically.")
+
+@st.fragment(run_every="3s")
+def _sync_status_widget():
+    status=sync_status(repo.root)
+    if not status:return
+    if status.get("status")=="running":st.info(f"Sync running via {status.get('profile','planner')}…")
+    else:st.success("Sync finished. Click Refresh view to load the latest plan state.")
 
 def _review_page(stored,plan):
     entries=plan["entries"]; target=float(plan["target_hours"]); clocked=sum(_hours(e.get("original_duration_seconds")) for e in entries); workable=sum(_hours(e.get("planned_duration_seconds")) for e in entries if not e.get("ignored")); booked=sum(_hours(e.get("planned_duration_seconds")) for e in entries if e.get("reconciliation_state")=="BOOKED"); pending=_pending(entries); metrics=st.columns(5); metrics[0].metric("Target",f"{target:.1f}h"); metrics[1].metric("Clocked",f"{clocked:.1f}h"); metrics[2].metric("Workable",f"{workable:.1f}h"); metrics[3].metric("Booked",f"{booked:.1f}h"); metrics[4].metric("Open",f"{max(0,workable-booked):.1f}h")
@@ -196,8 +201,7 @@ def _review_page(stored,plan):
     with c3:
         if st.button("Refresh view",use_container_width=True):_review_context.clear(); st.rerun()
     with c4:st.caption(f"{stored['plan_id']} · revision {stored['revision']} · {stored['status']} · planner: {read_config()['planner_profile']}")
-    nav1,nav2=st.columns([1.5,4.5])
-    with nav1:selected_date=_date_navigator(stored,view)
+    _sync_status_widget(); selected_date=_date_navigator(stored,view)
     if abs(workable-target)>=.01:st.warning(f"Workable time is {workable-target:+.2f}h versus target.")
     if pending:st.info(f"{pending} PROPOSE/ASK entries still need review.")
     with st.expander("⚙ Week settings",expanded=False):
@@ -207,7 +211,9 @@ def _review_page(stored,plan):
     for entry in entries:days.setdefault(str(entry.get("date") or "Unknown"),[]).append(entry)
     keys=sorted(k for k in days if k!="Unknown")
     if view=="day" and keys:
-        requested=st.session_state.get("timesheet_selected_day") or selected_date.isoformat(); default_index=keys.index(requested) if requested in keys else 0; day=st.selectbox("Day",keys,index=default_index,format_func=lambda d:date.fromisoformat(d).strftime("%A %d %B"),key="timesheet_day_select"); st.session_state["timesheet_selected_day"]=day; _render_day(plan,day,days[day])
+        day=selected_date.isoformat()
+        if day in days:_render_day(plan,day,days[day])
+        else:st.info("No time entries for this date.")
     else:
         for day in keys:_render_day(plan,day,days[day])
     if view=="week":
