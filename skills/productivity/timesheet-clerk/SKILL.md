@@ -13,19 +13,31 @@ At the start of every planning or synchronization run, call `timesheet_config_ge
 
 Confidence thresholds are supporting policy boundaries. Missing masterdata, contradictory evidence or ambiguous planned assignments may never be upgraded to AUTO merely because a numeric score clears a threshold.
 
+## Tool-only state access
+Timesheet Clerk working state is owned by the Timesheet Clerk tools. During planning, synchronization, review assistance or reconciliation:
+
+- use `timesheet_plan_active`, `timesheet_plan_list`, `timesheet_plan_sync`, `timesheet_config_get` and `timesheet_learning_context` for Clerk state;
+- never read, search, infer or edit Timesheet Clerk plan/config/SKILL state through filesystem, terminal, shell, file-search, generic file-read, Google Drive or other storage tools;
+- never guess a filesystem path for a plan;
+- never reconstruct a plan from files when the Clerk tools are available;
+- a tool error must be fixed at the tool-contract level, not worked around by reading files directly.
+
+Clockify range arguments must use full ISO-8601 timestamps accepted by the Clockify tool. For a calendar week, use explicit start-of-day and end-of-day timestamps for the requested local dates rather than bare `YYYY-MM-DD` strings.
+
 ## Weekly sync workflow
 1. Determine the requested week and local calendar dates.
 2. Read `timesheet_config_get`.
-3. Read prior evidence with `timesheet_learning_context`.
-4. Read Clockify entries for the complete period.
-5. Read Simplicate context, planned assignments and already booked hours.
-6. Reconcile already booked work before proposing new bookings.
-7. Try planned-assignment-first mapping when runtime policy enables it.
-8. If no suitable planned assignment can be determined, use other evidence and validated booking assignments.
-9. Only when no suitable assignment should be used, fall back to direct customer → project → task/service → hour-type mapping.
-10. Build or refresh the sequential day plan. Never consolidate across calendar-day boundaries.
-11. Persist through `timesheet_plan_sync`. A repeated run in the same open week synchronizes the existing plan rather than creating another plan or human-review revision.
-12. Never book during generation or sync.
+3. Read the existing working plan with `timesheet_plan_active` when one may already exist.
+4. Read prior evidence with `timesheet_learning_context`.
+5. Read Clockify entries for the complete period using ISO-8601 timestamps.
+6. Read Simplicate context, planned assignments and already booked hours.
+7. Reconcile already booked work before proposing new bookings.
+8. Try planned-assignment-first mapping when runtime policy enables it.
+9. If no suitable planned assignment can be determined, use other evidence and validated booking assignments.
+10. Only when no suitable assignment should be used, fall back to direct customer → project → task/service → hour-type mapping.
+11. Build or refresh the sequential day plan. Never consolidate across calendar-day boundaries.
+12. Persist through `timesheet_plan_sync`. A repeated run in the same open week synchronizes the existing plan rather than creating another plan or human-review revision.
+13. Never book during generation or sync.
 
 New Clockify entries are appended, changed source entries are refreshed, and human-reviewed values are preserved. Never silently overwrite a confirmed, corrected or skipped entry during a later sync.
 
