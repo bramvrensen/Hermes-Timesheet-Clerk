@@ -1,0 +1,136 @@
+"""Administrative Streamlit panels for Timesheet Clerk."""
+
+from __future__ import annotations
+
+import json
+import subprocess
+from pathlib import Path
+from typing import Any
+
+import streamlit as st
+
+from .runtime import DEFAULT_CONFIG, purge_expired_artifacts, read_config, read_runtime_skill, write_config, write_runtime_skill
+from .storage import PlanRepository
+
+
+def render_config(repo: PlanRepository, default_skill: Path) -> None:
+    st.subheader("Configuration")
+    cfg = read_config()
+    c1, c2 = st.columns(2)
+    with c1:
+        planner_profile = st.text_input("Planner profile", value=str(cfg["planner_profile"]))
+        contract_hours = st.number_input("Default contract hours", min_value=0.0, step=0.5, value=float(cfg["contract_hours_default"]))
+        auto_threshold = st.slider("AUTO confidence threshold", 0, 100, int(round(float(cfg["auto_confidence_threshold"]) * 100)))
+        propose_threshold = st.slider("PROPOSE confidence threshold", 0, 100, int(round(float(cfg["propose_confidence_threshold"]) * 100)))
+    with c2:
+        prefer_planned = st.checkbox("Prefer planned assignment", value=bool(cfg["prefer_planned_assignment"]))
+        require_strong = st.checkbox("Require strong evidence for AUTO", value=bool(cfg["require_strong_evidence_for_auto"]))
+        semantic_auto = st.checkbox("Allow semantic similarity alone for AUTO", value=bool(cfg["semantic_similarity_auto_allowed"]))
+        retention = st.number_input("Booked snapshot/receipt retention (days)", min_value=1, step=30, value=int(cfg["booked_artifact_retention_days"]))
+        purge_after = st.checkbox("Purge working plan after successful booking", value=bool(cfg["purge_after_successful_booking"]))
+
+    if propose_threshold > auto_threshold:
+        st.error("PROPOSE threshold cannot exceed AUTO threshold.")
+    elif st.button("Save configuration", type="primary"):
+        saved = write_config({
+            **cfg,
+            "planner_profile": planner_profile,
+            "contract_hours_default": contract_hours,
+            "auto_confidence_threshold": auto_threshold / 100.0,
+            "propose_confidence_threshold": propose_threshold / 100.0,
+            "prefer_planned_assignment": prefer_planned,
+            "require_strong_evidence_for_auto": require_strong,
+            "semantic_similarity_auto_allowed": semantic_auto,
+            "booked_artifact_retention_days": int(retention),
+            "purge_after_successful_booking": purge_after,
+        })
+        st.success(f"Saved runtime config for planner profile {saved['planner_profile']}.")
+
+    st.divider()
+    st.caption("Maintenance")
+    if st.button("Purge expired booked artifacts"):
+        removed = purge_expired_artifacts(repo.root)
+        st.success(f"Removed {removed['approvals']} approvals and {removed['receipts']} receipts.")
+
+
+def render_skill(repo: PlanRepository, default_skill: Path) -> None:
+    st.subheader("Runtime SKILL.md")
+    st.caption(f"Live file: {repo.root / 'SKILL.md'} · stored outside Git")
+    text = read_runtime_skill(default_skill)
+    edited = st.text_area("SKILL.md", value=text, height=650, label_visibility="collapsed", key="runtime-skill-editor")
+    if st.button("Save SKILL and reload skills", type="primary"):
+        write_runtime_skill(edited, default_skill)
+        cfg = read_config()
+        profile = str(cfg.get("planner_profile") or "atlas")
+        result = subprocess.run(
+            ["hermes", "-p", profile, "chat", "-q", "/reload-skills"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if result.returncode == 0:
+            st.success(f"SKILL saved and /reload-skills executed for {profile}.")
+        else:
+            st.warning(f"SKILL saved, but reload returned exit {result.returncode}. It will be picked up by the next fresh session.")
+            if result.stderr:
+                st.code(result.stderr[-3000:])
+
+
+def render_state(repo: PlanRepository, selected_plan: dict[str, Any] | None, review_context: dict[str, Any] | None = None) -> None:
+    st.subheader("State inspector")
+    tabs = st.tabs(["Active plan", "Revisions", "Mappings", "Rules", "Feedback", "Approvals", "Receipts", "Logs"])
+
+    with tabs[0]:
+        if selected_plan:
+            st.json(selected_plan, expanded=False)
+        else:
+            st.info("No selected plan.")
+
+    with tabs[1]:
+        if selected_plan:
+            plan_id = selected_plan["plan_id"]
+            paths = repo._revision_paths(plan_id)
+            st.caption(f"{len(paths)} revision file(s)")
+            for path in reversed(paths):
+                with st.expander(path.name):
+                    st.code(path.read_text(encoding="utf-8"), language="json")
+
+    with tabs[2]:
+        payload = review_context if review_context is not None else (selected_plan or {}).get("review_context") or {}
+        st.json(payload, expanded=False)
+
+    with tabs[3]:
+        st.json(repo.read_rules(), expanded=False)
+
+    with tabs[4]:
+        st.json(repo.feedback(limit=500), expanded=False)
+
+    with tabs[5]:
+        paths = sorted(repo.approvals_dir.glob("*.json"), reverse=True)
+        _render_files(paths)
+
+    with tabs[6]:
+        paths = sorted(repo.receipts_dir.glob("*.json"), reverse=True)
+        _render_files(paths)
+
+    with tabs[7]:
+        log_dir = repo.root / "logs"
+        paths = sorted(log_dir.glob("*.log"), reverse=True) if log_dir.exists() else []
+        if not paths:
+            st.info("No logs yet.")
+        for path in paths:
+            with st.expander(path.name):
+                text = path.read_text(encoding="utf-8", errors="replace")
+                st.code(text[-20000:])
+
+
+def _render_files(paths: list[Path]) -> None:
+    if not paths:
+        st.info("No files.")
+        return
+    for path in paths:
+        with st.expander(path.name):
+            try:
+                st.json(json.loads(path.read_text(encoding="utf-8")), expanded=False)
+            except Exception:
+                st.code(path.read_text(encoding="utf-8", errors="replace"))
