@@ -31,19 +31,31 @@ def load_review_context(start_date:str,end_date:str)->dict[str,list[dict[str,Any
     customers={}
     for p in projects:
         if p.get("customer_id"): customers.setdefault(p["customer_id"],{"id":p["customer_id"],"name":p.get("customer_name") or p["customer_id"]})
-    # Simplicate's global hour-type endpoint does not reliably expose the project-service relation.
-    # Enrich that relation from validated booking assignments, where task + hour type are linked explicitly.
-    scoped=[]; seen=set()
+    # Prefer tenant-validated assignment relations. The global hour-type endpoint does
+    # not reliably expose service relations, so services without any scoped relation
+    # receive the active global hour-type list as a manual-review fallback instead of
+    # an unusable empty selector. This fallback is review-only evidence, never AUTO.
+    scoped=[]; seen=set(); services_with_scoped_types=set()
     for a in assignments:
         task=a.get("task") or {}; ht=a.get("hour_type") or {}; sid=_plain_id(_nested_id(task)); hid=_plain_id(_nested_id(ht))
         if not sid or not hid: continue
         key=(sid,hid)
         if key in seen: continue
-        seen.add(key)
+        seen.add(key); services_with_scoped_types.add(sid)
         scoped.append({"id":hid,"name":_nested_name(ht) or hour_type_names.get(hid) or hid,"service_id":sid,"source":"assignment"})
     for ht in hour_types:
         sid=ht.get("service_id")
-        if sid and (sid,ht["id"]) not in seen: scoped.append(ht); seen.add((sid,ht["id"]))
+        if sid and (sid,ht["id"]) not in seen:
+            scoped.append(ht); seen.add((sid,ht["id"])); services_with_scoped_types.add(sid)
+    global_types=[ht for ht in hour_types if not ht.get("service_id")]
+    for service in services:
+        sid=service["id"]
+        if sid in services_with_scoped_types: continue
+        for ht in global_types:
+            key=(sid,ht["id"])
+            if key in seen: continue
+            seen.add(key)
+            scoped.append({"id":ht["id"],"name":ht.get("name") or ht["id"],"service_id":sid,"source":"global_fallback"})
     return {"customers":sorted(customers.values(),key=lambda r:_sort_name(r.get("name"))),"projects":sorted(projects,key=lambda r:(_sort_name(r.get("customer_name")),_sort_name(r.get("name")))),"services":sorted(services,key=lambda r:_sort_name(r.get("name"))),"hour_types":sorted(scoped,key=lambda r:(_sort_name(r.get("service_id")),_sort_name(r.get("name")))),"booking_assignments":sorted(assignments,key=lambda r:_sort_name(r.get("display_label") or r.get("name")))}
 
 def _normalize_project(row):
