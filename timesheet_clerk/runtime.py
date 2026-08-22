@@ -25,6 +25,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "semantic_similarity_auto_allowed": False,
     "require_strong_evidence_for_auto": True,
     "prefer_planned_assignment": True,
+    "preferred_hour_type": "Senior Consultant",
     "booked_artifact_retention_days": 365,
     "purge_after_successful_booking": True,
     "keep_feedback_forever": True,
@@ -78,6 +79,7 @@ def validate_config(config: dict[str, Any]) -> dict[str, Any]:
     result["semantic_similarity_auto_allowed"] = bool(result.get("semantic_similarity_auto_allowed", False))
     result["require_strong_evidence_for_auto"] = bool(result.get("require_strong_evidence_for_auto", True))
     result["prefer_planned_assignment"] = bool(result.get("prefer_planned_assignment", True))
+    result["preferred_hour_type"] = str(result.get("preferred_hour_type") or "").strip()
     result["booked_artifact_retention_days"] = max(1, int(result.get("booked_artifact_retention_days", 365)))
     result["purge_after_successful_booking"] = bool(result.get("purge_after_successful_booking", True))
     result["keep_feedback_forever"] = bool(result.get("keep_feedback_forever", True))
@@ -106,11 +108,7 @@ def write_runtime_skill(text: str, default_skill: Path) -> Path:
 
 
 def purge_expired_artifacts(root: Path | None = None, *, now: datetime | None = None) -> dict[str, int]:
-    """Remove booked snapshots/receipts older than configured retention.
-
-    Working plans are not age-purged here. They are compacted explicitly after a
-    successful booking, leaving only the approved snapshot and booking receipts.
-    """
+    """Remove booked snapshots/receipts older than configured retention."""
     base = Path(root) if root is not None else state_root()
     config = read_config()
     cutoff = (now or datetime.now(timezone.utc)) - timedelta(days=config["booked_artifact_retention_days"])
