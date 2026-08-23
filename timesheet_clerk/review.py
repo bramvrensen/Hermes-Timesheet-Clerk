@@ -1,15 +1,10 @@
-"""Deterministic review helpers used by Streamlit.
-
-No mapping or autonomy decisions are made here. The helpers only compare user
-review state with the agent proposal and maintain the same-day sequential
-planned timeline after duration edits.
-"""
+"""Deterministic review helpers used by Streamlit."""
 from __future__ import annotations
 import hashlib, json, uuid
 from copy import deepcopy
 from datetime import datetime, timedelta
 from typing import Any
-from .contracts import utc_now
+from .contracts import utc_now, validate_plan
 
 _REVIEW_FIELDS=("planned_duration_seconds","planned_start","planned_end","booking_mode","assignment","direct_mapping","ignored")
 
@@ -30,12 +25,6 @@ def _target_complete(entry:dict[str,Any])->bool:
     return all(str(mapping.get(key) or "").strip() for key in ("project_id","service_id","hour_type_id"))
 
 def apply_review(plan:dict[str,Any],entry_id:str,reviewed_values:dict[str,Any])->tuple[dict[str,Any],dict[str,Any],dict[str,Any]]:
-    """Apply review values without falsely resolving incomplete entries.
-
-    Partial edits such as changing duration are valid while a PROPOSE/ASK target
-    is still incomplete. Such entries remain pending instead of becoming
-    `corrected`, which would make contract validation require a complete target.
-    """
     updated=deepcopy(plan);index=next((i for i,row in enumerate(updated["entries"]) if row.get("entry_id")==entry_id),None)
     if index is None:raise KeyError(entry_id)
     original=deepcopy(updated["entries"][index]);entry=updated["entries"][index];was_skipped=bool(original.get("ignored")) or original.get("review_state")=="skipped"
@@ -49,6 +38,20 @@ def apply_review(plan:dict[str,Any],entry_id:str,reviewed_values:dict[str,Any])-
     updated["status"]="IN_REVIEW"
     if entry.get("planned_duration_seconds")!=original.get("planned_duration_seconds"):_reflow_day(updated["entries"],index)
     return updated,original,deepcopy(entry)
+
+def split_consolidated_entry(plan:dict[str,Any],entry_id:str)->dict[str,Any]:
+    """Split an aggregate entry back into immutable Clockify source rows."""
+    updated=deepcopy(plan);index=next((i for i,row in enumerate(updated.get("entries") or []) if row.get("entry_id")==entry_id),None)
+    if index is None:raise KeyError(entry_id)
+    original=updated["entries"][index];source_ids=[str(v) for v in original.get("clockify_source_ids") or [] if v]
+    if len(source_ids)<2:raise ValueError("entry is not consolidated")
+    snapshots=updated.get("clockify_source_snapshots") or {};missing=[sid for sid in source_ids if sid not in snapshots]
+    if missing:raise ValueError(f"cannot split without Clockify source snapshots: {', '.join(missing)}")
+    split=[]
+    for position,sid in enumerate(source_ids):
+        source=deepcopy(snapshots[sid]);row=deepcopy(original);duration=int(source.get("duration_seconds") or 0)
+        row["entry_id"]=entry_id if position==0 else f"{entry_id}-split-{sid}";row["clockify_source_ids"]=[sid];row["source"]={k:deepcopy(source.get(k)) for k in ("description","client","project","start","end")};row["date"]=str(source.get("start") or row.get("date") or "")[:10];row["original_duration_seconds"]=duration;row["planned_duration_seconds"]=duration;row["planned_start"]=source.get("start");row["planned_end"]=source.get("end");row["review_state"]=None;row["tier"]="PROPOSE";row["overall_tier"]="PROPOSE";row["split_from_entry_id"]=entry_id;row["source_fingerprint"]=source_fingerprint(row);split.append(row)
+    updated["entries"][index:index+1]=split;updated["entries"].sort(key=lambda r:(str(r.get("date") or ""),str(r.get("planned_start") or ""),str(r.get("entry_id") or "")));updated["status"]="IN_REVIEW";return validate_plan(updated)
 
 def _reflow_day(entries:list[dict[str,Any]],changed_index:int)->None:
     changed=entries[changed_index];day=changed.get("date");changed_start=_parse_datetime(changed.get("planned_start"))

@@ -9,7 +9,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-__version__ = "0.4.7"
+__version__ = "0.4.8"
 
 # Keep only the latest two mutable working revisions by default. Approval
 # snapshots, receipts and feedback are stored separately and remain immutable.
@@ -36,15 +36,9 @@ def _bootstrap_shared_state() -> None:
         root = _SHARED_STATE
     root.mkdir(parents=True, exist_ok=True)
 
-    # Streamlit runs in a separate child process. Persist its actually loaded
-    # package version so the Hermes-native updater can detect stale frontend
-    # code without depending on the frontend to orchestrate deployment.
     argv = " ".join(str(v) for v in sys.argv).lower()
     if "streamlit" in argv or "frontend/app.py" in argv:
-        payload = {
-            "version": __version__,
-            "loaded_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
-        }
+        payload = {"version": __version__, "loaded_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")}
         try:
             (root / "frontend-runtime.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
         except OSError:
