@@ -1,38 +1,14 @@
-"""Safe Simplicate booking preview page.
-
-0.5.1 deliberately exposes preview/preflight only. Live POST execution remains
-behind the backend write guard and is not wired to this page yet.
-"""
+"""Inline Booking tab for the Timesheet Clerk Streamlit frontend."""
 from __future__ import annotations
 
-import sys
-from pathlib import Path
 from typing import Any
 
 import streamlit as st
 
-ROOT = Path(__file__).resolve().parents[2]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
-
-from timesheet_clerk.booking import latest_approved_snapshot, preview_booking, write_enabled
-from timesheet_clerk.config import SimplicateConfig
-from timesheet_clerk.simplicate import SimplicateClient
-from timesheet_clerk.storage import PlanNotFound, PlanRepository, StateConflict
-from timesheet_clerk.ui_auth import require_login
-
-st.set_page_config(page_title="Timesheet Clerk · Booking", page_icon="🧾", layout="wide")
-repo = PlanRepository()
-
-
-def _selected_plan_id() -> str | None:
-    selected = str(st.session_state.get("selected_plan_id") or "").strip()
-    if selected:
-        return selected
-    try:
-        return str(repo.get_active().get("plan_id") or "") or None
-    except PlanNotFound:
-        return None
+from .booking import latest_approved_snapshot, preview_booking, write_enabled
+from .config import SimplicateConfig
+from .simplicate import SimplicateClient
+from .storage import PlanRepository, StateConflict
 
 
 def _status_label(value: str) -> str:
@@ -56,33 +32,26 @@ def _render_payload(row: dict[str, Any]) -> None:
             st.json(matches, expanded=False)
 
 
-def main() -> None:
-    require_login()
-    st.title("🧾 Booking")
-    st.caption("Simplicate booking preflight. This page does not write hours in 0.5.1.")
-
-    plan_id = _selected_plan_id()
-    if not plan_id:
-        st.info("No Timesheet Clerk plan exists yet.")
-        return
+def render_booking(repo: PlanRepository, plan_id: str) -> None:
+    st.subheader("🧾 Booking")
+    st.caption("Simplicate booking preflight. This view does not write hours yet.")
 
     try:
         snapshot = latest_approved_snapshot(repo, plan_id)
     except StateConflict:
-        st.info("The selected week has no approved snapshot yet. Finish review and use Approve week first.")
+        st.info("This week has no approved snapshot yet. Finish review and use Approve week first.")
         return
 
     week = snapshot.get("week") or {}
-    st.subheader(f"Approved week {week.get('monday')} → {week.get('sunday')}")
-    st.caption(f"{snapshot.get('plan_id')} · approved revision {snapshot.get('revision')} · approved {snapshot.get('approved_at') or 'unknown'}")
+    st.caption(f"Approved week {week.get('monday')} → {week.get('sunday')} · revision {snapshot.get('revision')} · approved {snapshot.get('approved_at') or 'unknown'}")
 
     if write_enabled():
-        st.warning("The backend live-write flag is enabled, but this 0.5.1 page still exposes preview only. No POST action is available here.")
+        st.warning("The backend live-write flag is enabled, but this UI still exposes preview only. No POST action is available here.")
     else:
         st.success("Live Simplicate writes are disabled. Preflight is read-only.")
 
     key = f"booking_preview:{snapshot.get('plan_id')}:{snapshot.get('revision')}"
-    if st.button("Run Simplicate preflight", type="primary", use_container_width=True):
+    if st.button("Run Simplicate preflight", type="primary", use_container_width=True, key="run-booking-preflight"):
         try:
             with st.spinner("Reading existing Simplicate hours and building exact booking payloads…", show_time=True):
                 client = SimplicateClient(SimplicateConfig.from_env())
@@ -108,13 +77,6 @@ def main() -> None:
     else:
         st.success("Preflight found no possible duplicate registrations.")
 
-    st.subheader("Exact Simplicate payloads")
+    st.markdown("#### Exact Simplicate payloads")
     for row in preview.get("rows") or []:
         _render_payload(row)
-
-    st.divider()
-    st.caption("Next pilot step after validating these payloads: enable live writes deliberately and book exactly one approved row, read it back from Simplicate, persist its receipt, then prove a second attempt is rejected.")
-
-
-if __name__ == "__main__":
-    main()
