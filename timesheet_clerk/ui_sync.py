@@ -26,8 +26,12 @@ def _upgrade_sync_prompt(prompt: str) -> str:
     if "unprocessed_entries" not in prompt:
         prompt += (
             " Treat source_delta.unprocessed_entries as Clockify source records that still "
-            "require planning even when their baseline snapshots are unchanged. Deduplicate "
-            "new/changed/unprocessed rows by Clockify source ID before calling timesheet_plan_sync."
+            "require planning even when their baseline snapshots are unchanged."
+        )
+    if "Deduplicate" not in prompt:
+        prompt += (
+            " Deduplicate new/changed/unprocessed rows by Clockify source ID before calling "
+            "timesheet_plan_sync."
         )
     return prompt
 
