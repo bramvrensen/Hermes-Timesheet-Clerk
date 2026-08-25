@@ -23,6 +23,13 @@ def test_ui_sync_does_not_import_provider_clients():
     assert not any("simplicate" in name.lower() for name in imported_modules)
 
 
+def test_upgrade_sync_prompt_includes_unprocessed_sources():
+    original = "use only source_delta.new_entries and source_delta.changed_entries as Clockify source records"
+    upgraded = ui_sync._upgrade_sync_prompt(original)
+    assert "source_delta.unprocessed_entries" in upgraded
+    assert "Deduplicate" in upgraded
+
+
 def test_launch_sync_only_starts_hermes(monkeypatch, tmp_path):
     calls = []
 
@@ -37,5 +44,7 @@ def test_launch_sync_only_starts_hermes(monkeypatch, tmp_path):
     result = ui_sync.launch_sync(root=tmp_path, profile="atlas", prompt="sync week")
     assert result["status"] == "running"
     assert result["pid"] == 1234
-    assert calls[0][0][-1] == "sync week"
+    sent_prompt = calls[0][0][-1]
+    assert sent_prompt.startswith("sync week")
+    assert "unprocessed_entries" in sent_prompt
     assert "hermes" in calls[0][0][0]
