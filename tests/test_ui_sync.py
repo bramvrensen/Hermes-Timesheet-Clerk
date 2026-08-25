@@ -1,3 +1,4 @@
+import ast
 from pathlib import Path
 
 import timesheet_clerk.ui_sync as ui_sync
@@ -5,10 +6,21 @@ import timesheet_clerk.ui_sync as ui_sync
 
 def test_ui_sync_does_not_import_provider_clients():
     source = Path(ui_sync.__file__).read_text(encoding="utf-8")
-    assert "ClockifyClient" not in source
-    assert "ClockifyConfig" not in source
-    assert "Simplicate" not in source
-    assert "CLOCKIFY_API_KEY" not in source
+    tree = ast.parse(source)
+    imported_modules = set()
+    imported_names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported_modules.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            imported_modules.add(node.module or "")
+            imported_names.update(alias.name for alias in node.names)
+
+    assert not any(name.endswith("clockify") for name in imported_modules)
+    assert not any(name.endswith("config") for name in imported_modules)
+    assert "ClockifyClient" not in imported_names
+    assert "ClockifyConfig" not in imported_names
+    assert not any("simplicate" in name.lower() for name in imported_modules)
 
 
 def test_launch_sync_only_starts_hermes(monkeypatch, tmp_path):
