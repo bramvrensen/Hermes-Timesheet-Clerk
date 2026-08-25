@@ -15,31 +15,31 @@ Timesheet Clerk state is owned by `timesheet_*` tools. Never read, search, infer
 For every refresh of an existing week, call `timesheet_sync_probe` first.
 
 - If `has_changes` is false, stop immediately. Do not load Simplicate context, learning context, Clockify again or the full active plan. Report only the deterministic summary returned by the probe.
-- If `source_delta.requires_rebaseline` is true, call `timesheet_source_rebaseline` for the same interval. This refreshes immutable Clockify snapshots only and preserves human review. Then probe once more. Do not interpret legacy aggregate plan fields as source changes.
-- If genuine changes exist after a valid baseline, map the union of `source_delta.new_entries`, `source_delta.changed_entries` and `source_delta.unprocessed_entries`. Unprocessed entries are Clockify sources already known to the canonical baseline but not represented by any working-plan entry; they must never be treated as a no-op.
-- Read runtime config, active plan, relevant learning evidence and only the Simplicate data needed for those source rows.
+- If `source_delta.requires_rebaseline` is true, call `timesheet_source_rebaseline` for the same interval. This refreshes immutable Clockify snapshots and preserves human review.
+- If `source_delta.unprocessed_count > 0`, do not construct or call `timesheet_plan_sync`. Call `timesheet_source_rebaseline` for the same interval. Baseline persistence enforces plan coverage and deterministically creates unresolved ASK entries for every Clockify source that is not yet represented in the working plan. Stop after that repair and report its deterministic summary. Mapping happens in a later review/planning pass.
+- Only when coverage is complete should changed/new rows proceed through mapping and `timesheet_plan_sync`.
 - Missing source IDs must be surfaced and reconciled, never silently deleted.
 
 ## Clockify source fidelity
 Every normalized Clockify row is an immutable source bundle. Keep its ID, description, client, project, tags, start, end and duration together.
 
 - Canonical source comparison uses per-Clockify-ID snapshots, independent from booking-plan aggregation.
-- Plan coverage is separate from baseline state. A source can be unchanged in Clockify yet still require planning when it is not covered by any `clockify_source_ids` in the working plan.
+- Plan coverage is separate from baseline state. A source can be unchanged in Clockify yet still require coverage repair when it is not represented by any `clockify_source_ids` in the working plan.
 - Never move source facts from one Clockify row to another.
 - Simplicate mapping, review state, ignored state and planned duration may change booking decisions but never mutate the canonical Clockify snapshot.
 - Do not aggregate unrelated source rows merely because descriptions are similar.
 
 ## Mapping workflow when source changes exist
-1. Read `timesheet_config_get`.
-2. Read `timesheet_plan_active`.
-3. Read `timesheet_learning_context` only when mapping decisions are required.
-4. Work from the source deltas returned by `timesheet_sync_probe`, not a second full-week Clockify fetch.
-5. Map every unique row in `new_entries`, `changed_entries` and `unprocessed_entries`; deduplicate by Clockify source ID.
-6. Read Simplicate planned assignments, booking candidates and booked hours needed for those rows.
+1. Run `timesheet_sync_probe`.
+2. Repair legacy baseline or missing plan coverage first when required.
+3. Read `timesheet_config_get` and `timesheet_plan_active` only when mapping decisions are actually needed.
+4. Read `timesheet_learning_context` only when mapping decisions are required.
+5. Map only new/changed rows after plan coverage is complete.
+6. Read only the Simplicate planned assignments, booking candidates and booked hours needed for those rows.
 7. Reconcile booked work.
 8. Prefer valid planned assignments when policy allows.
 9. Fall back to direct customer → project → task/service → hour type when no suitable assignment exists.
-10. Persist through `timesheet_plan_sync`; repeated runs update the same open week and preserve human review.
+10. Persist mapping changes through `timesheet_plan_sync`.
 11. Never book during generation or sync.
 
 ## Deterministic summaries
