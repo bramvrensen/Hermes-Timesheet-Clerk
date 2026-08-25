@@ -61,6 +61,7 @@ def test_source_delta_detects_noop_after_baseline():
     assert delta["has_changes"] is False
     assert delta["requires_rebaseline"] is False
     assert delta["unchanged_count"] == 2
+    assert delta["unprocessed_count"] == 0
     assert delta["new_count"] == 0
     assert delta["changed_count"] == 0
     assert delta["missing_count"] == 0
@@ -75,10 +76,26 @@ def test_source_delta_returns_only_changed_new_and_missing_rows():
     assert delta["missing_source_ids"] == ["c2"]
 
 
+def test_baseline_sources_missing_from_plan_are_unprocessed():
+    p = plan()
+    p["entries"] = [p["entries"][0]]
+    rows = [source(), source("c2", 1800, "Lunch", "Internal"), source("c3", 900, "Tuesday", "Client work")]
+    stored = attach_source_snapshots(p, rows)
+
+    delta = source_delta(stored, rows)
+
+    assert delta["new_count"] == 0
+    assert delta["changed_count"] == 0
+    assert delta["missing_count"] == 0
+    assert delta["unchanged_count"] == 3
+    assert delta["covered_count"] == 1
+    assert delta["unprocessed_count"] == 2
+    assert [row["id"] for row in delta["unprocessed_entries"]] == ["c2", "c3"]
+    assert delta["has_changes"] is True
+
+
 def test_multi_source_aggregate_does_not_create_false_changes():
     p = plan()
-    # One booking entry may aggregate multiple Clockify sources. Its aggregate
-    # source/duration must not be used as source truth for either ID.
     p["entries"] = [{
         "entry_id": "aggregate",
         "clockify_source_ids": ["c1", "c2"],
@@ -95,6 +112,7 @@ def test_multi_source_aggregate_does_not_create_false_changes():
     delta = source_delta(p, rows)
     assert delta["has_changes"] is False
     assert delta["unchanged_count"] == 2
+    assert delta["unprocessed_count"] == 0
 
 
 def test_simplicate_or_review_fields_do_not_change_source_snapshot():
