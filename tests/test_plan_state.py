@@ -4,6 +4,7 @@ import pytest
 
 from timesheet_clerk.review import apply_review, feedback_event
 from timesheet_clerk.storage import PlanRepository, StateConflict
+from timesheet_clerk.working import sync_week_plan
 
 
 def sample_plan():
@@ -86,8 +87,6 @@ def test_partial_edit_keeps_incomplete_direct_entry_unresolved():
     updated, _, reviewed = apply_review(plan, "a", {"planned_duration_seconds": 1800})
     assert reviewed.get("review_state") is None
     repo_plan = deepcopy(updated)
-    # Contract validation must accept the still-pending PROPOSE entry.
-    repo = PlanRepository.__new__(PlanRepository)
     from timesheet_clerk.contracts import validate_plan
     validate_plan(repo_plan)
 
@@ -127,3 +126,51 @@ def test_approval_requires_review_of_propose(tmp_path):
     saved = repo.save_revision(plan, expected_revision=1)
     snapshot = repo.approve_snapshot(saved["plan_id"], saved["revision"])
     assert snapshot["status"] == "APPROVED"
+
+
+def test_approved_snapshot_does_not_close_working_week_for_later_clockify_delta(tmp_path):
+    """Monday approval stays immutable while a Tuesday delta extends the working plan."""
+    repo = PlanRepository(tmp_path)
+    monday = sample_plan()
+    monday["entries"] = [deepcopy(monday["entries"][0])]
+    monday["entries"][0]["date"] = "2026-08-17"
+    monday["entries"][0]["planned_start"] = "2026-08-17T09:00:00+02:00"
+    monday["entries"][0]["planned_end"] = "2026-08-17T10:00:00+02:00"
+    repo.create(monday)
+
+    reviewed, _, _ = apply_review(repo.get_active(), "a", {})
+    reviewed["entries"][0]["planned_duration_seconds"] = 5400
+    reviewed["entries"][0]["review_state"] = "corrected"
+    saved = repo.save_revision(reviewed, expected_revision=1)
+    approval = repo.approve_snapshot(saved["plan_id"], saved["revision"])
+
+    # The planner gets only Tuesday's source delta, not the full Monday+Tuesday week.
+    delta = deepcopy(monday)
+    delta["revision"] = 1
+    delta["entries"] = [{
+        "entry_id": "tuesday-new",
+        "clockify_source_ids": ["clock-tuesday"],
+        "date": "2026-08-18",
+        "source": {"description": "Tuesday work"},
+        "original_duration_seconds": 7200,
+        "planned_duration_seconds": 7200,
+        "planned_start": "2026-08-18T09:00:00+02:00",
+        "planned_end": "2026-08-18T11:00:00+02:00",
+        "booking_mode": "assignment",
+        "assignment": {"id": "assign-tuesday", "display_label": "Client · Tuesday"},
+        "tier": "AUTO",
+    }]
+
+    synced = sync_week_plan(repo, delta)
+    assert synced["revision"] == saved["revision"] + 1
+    assert synced["status"] == "IN_REVIEW"
+    assert {row["entry_id"] for row in synced["entries"]} == {"a", "tuesday-new"}
+    preserved = next(row for row in synced["entries"] if row["entry_id"] == "a")
+    assert preserved["planned_duration_seconds"] == 5400
+    assert preserved["review_state"] == "corrected"
+    assert not preserved.get("source_missing")
+
+    # Approval is a separate immutable snapshot and must still contain Monday only.
+    assert approval["status"] == "APPROVED"
+    assert len(approval["entries"]) == 1
+    assert approval["entries"][0]["planned_duration_seconds"] == 5400
