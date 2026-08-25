@@ -9,7 +9,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-__version__ = "0.5.3"
+__version__ = "0.5.4"
 
 # Keep only the latest two mutable working revisions by default. Approval
 # snapshots, receipts and feedback are stored separately and remain immutable.
@@ -28,21 +28,12 @@ def _bootstrap_shared_state() -> None:
         if not _SHARED_STATE.exists() and _LEGACY_STATE.exists():
             _SHARED_STATE.parent.mkdir(parents=True, exist_ok=True)
             try:
-                shutil.move(str(_LEGACY_STATE), str(_SHARED_STATE))
+                shutil.copytree(_LEGACY_STATE, _SHARED_STATE)
             except OSError:
-                shutil.copytree(_LEGACY_STATE, _SHARED_STATE, dirs_exist_ok=True)
-        _SHARED_STATE.mkdir(parents=True, exist_ok=True)
-        os.environ["TIMESHEET_CLERK_STATE_DIR"] = str(_SHARED_STATE)
+                pass
         root = _SHARED_STATE
+        os.environ["TIMESHEET_CLERK_STATE_DIR"] = str(root)
     root.mkdir(parents=True, exist_ok=True)
-
-    argv = " ".join(str(v) for v in sys.argv).lower()
-    if "streamlit" in argv or "frontend/app.py" in argv:
-        payload = {"version": __version__, "loaded_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")}
-        try:
-            (root / "frontend-runtime.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-        except OSError:
-            pass
 
 
 _bootstrap_shared_state()
