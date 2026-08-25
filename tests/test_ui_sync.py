@@ -1,47 +1,29 @@
-from timesheet_clerk.storage import PlanRepository
-from timesheet_clerk.ui_sync import _delta_counts, _plan_for_week, _planner_prompt_with_delta
+from pathlib import Path
+
+import timesheet_clerk.ui_sync as ui_sync
 
 
-def _plan():
-    return {
-        "schema_version": 1,
-        "plan_id": "2026-W35-test",
-        "revision": 1,
-        "status": "IN_REVIEW",
-        "generated_at": "2026-08-24T00:00:00Z",
-        "week": {"monday": "2026-08-24", "sunday": "2026-08-30"},
-        "contract_hours_default": 36.0,
-        "target_hours": 36.0,
-        "entries": [],
-    }
+def test_ui_sync_does_not_import_provider_clients():
+    source = Path(ui_sync.__file__).read_text(encoding="utf-8")
+    assert "ClockifyClient" not in source
+    assert "ClockifyConfig" not in source
+    assert "Simplicate" not in source
+    assert "CLOCKIFY_API_KEY" not in source
 
 
-def test_plan_for_week_finds_mutable_week(tmp_path):
-    repo = PlanRepository(tmp_path)
-    repo.create(_plan())
-    found = _plan_for_week(repo, "2026-08-24", "2026-08-30")
-    assert found is not None
-    assert found["plan_id"] == "2026-W35-test"
+def test_launch_sync_only_starts_hermes(monkeypatch, tmp_path):
+    calls = []
 
+    class Child:
+        pid = 1234
 
-def test_planner_prompt_embeds_exact_delta_and_suppresses_probe():
-    prepared = {
-        "delta": {
-            "new_entries": [{"id": "clock-tue", "description": "Tuesday"}],
-            "changed_entries": [],
-            "missing_source_ids": [],
-        }
-    }
-    prompt = _planner_prompt_with_delta("FIRST call timesheet_sync_probe", prepared)
-    assert "clock-tue" in prompt
-    assert "Do NOT call timesheet_sync_probe" in prompt
-    assert "superseded" in prompt
+    def fake_popen(args, **kwargs):
+        calls.append((args, kwargs))
+        return Child()
 
-
-def test_delta_counts_is_deterministic():
-    assert _delta_counts({"new_count": 2, "changed_count": 1, "missing_count": 3}) == {
-        "new_count": 2,
-        "changed_count": 1,
-        "missing_count": 3,
-        "unchanged_count": 0,
-    }
+    monkeypatch.setattr(ui_sync.subprocess, "Popen", fake_popen)
+    result = ui_sync.launch_sync(root=tmp_path, profile="atlas", prompt="sync week")
+    assert result["status"] == "running"
+    assert result["pid"] == 1234
+    assert calls[0][0][-1] == "sync week"
+    assert "hermes" in calls[0][0][0]
