@@ -9,7 +9,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-__version__ = "0.5.5"
+__version__ = "0.5.6"
 
 # Keep only the latest two mutable working revisions by default. Approval
 # snapshots, receipts and feedback are stored separately and remain immutable.
@@ -38,10 +38,10 @@ def _bootstrap_shared_state() -> None:
 
     argv = " ".join(str(v) for v in sys.argv).lower()
     if "streamlit" in argv or "frontend/app.py" in argv:
-        payload = {"version": __version__, "loaded_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")}
         try:
-            (root / "frontend-runtime.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-        except OSError:
+            from .storage import PlanRepository
+            PlanRepository(root).compact_all()
+        except Exception:
             pass
 
 
