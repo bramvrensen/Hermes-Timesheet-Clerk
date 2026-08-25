@@ -14,8 +14,27 @@ from pathlib import Path
 from typing import Any
 
 
+def _upgrade_sync_prompt(prompt: str) -> str:
+    """Keep older frontend refresh prompts compatible with recovery deltas."""
+    needle = "source_delta.new_entries and source_delta.changed_entries"
+    replacement = (
+        "source_delta.new_entries, source_delta.changed_entries, and "
+        "source_delta.unprocessed_entries"
+    )
+    if needle in prompt:
+        prompt = prompt.replace(needle, replacement)
+    if "unprocessed_entries" not in prompt:
+        prompt += (
+            " Treat source_delta.unprocessed_entries as Clockify source records that still "
+            "require planning even when their baseline snapshots are unchanged. Deduplicate "
+            "new/changed/unprocessed rows by Clockify source ID before calling timesheet_plan_sync."
+        )
+    return prompt
+
+
 def launch_sync(*, root: Path, profile: str, prompt: str) -> dict[str, Any]:
     """Start the Hermes planner without touching provider credentials in Streamlit."""
+    prompt = _upgrade_sync_prompt(prompt)
     log_dir = root / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     handle = (log_dir / "planner-refresh.log").open("ab")
