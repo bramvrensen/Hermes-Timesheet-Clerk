@@ -2,7 +2,7 @@
 
 Human-in-the-loop timesheet planning and booking for HERMES Agent.
 
-> Status: **0.6.4 deterministic planner.** Clockify/Simplicate reads, decisions-only mapping orchestration, source reconciliation, review UI, deterministic day scheduling, feedback, approvals, safe week rebuilds and current-week generation are available. Simplicate writes remain deliberately disabled until the booking path is validated.
+> Status: **0.6.5 deterministic planner.** Clockify/Simplicate reads, decisions-only mapping orchestration, source reconciliation, review UI, deterministic day scheduling, service-scoped hour type selection, feedback, approvals, safe week rebuilds and current-week generation are available. Simplicate writes remain deliberately disabled until the booking path is validated.
 
 See [`docs/DESIGN.md`](docs/DESIGN.md), [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md) and [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md).
 
@@ -24,6 +24,18 @@ timesheet_mapping_apply
             ↓
 validated + scheduled plan revision
 ```
+
+## 0.6.5 service-scoped hour types
+
+Direct-mapping review now treats the Simplicate Task / service as the parent of the Hour type choice.
+
+- selecting a Task / service filters the Hour type dropdown to rows whose `service_id` exactly matches the selected service;
+- global/unscoped hour types are never offered as a fallback;
+- duplicate hour types are removed by ID;
+- the configured preferred hour type is only prioritized inside the valid scoped set;
+- if Simplicate exposes no valid hour types for the selected service, the UI shows a warning and the mapping remains incomplete, so it cannot be resolved/saved as a complete direct mapping.
+
+This prevents review from creating project/service/hour-type combinations that Simplicate may reject later during booking.
 
 ## 0.6.4 review and scheduling
 
