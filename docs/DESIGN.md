@@ -1,209 +1,288 @@
-# HERMES Timesheet Clerk — Definitief Functioneel Ontwerp
+# HERMES Timesheet Clerk — Functioneel ontwerp
 
-## 1. Doel en ontwerpprincipes
+## 1. Doel
 
-De Timesheet Clerk ondersteunt HERMES bij het voorbereiden, controleren, leren en boeken van uren uit Clockify naar Simplicate.
+Timesheet Clerk ondersteunt HERMES bij het voorbereiden, controleren, leren en uiteindelijk boeken van uren uit Clockify naar Simplicate.
 
-Kernprincipes:
+Het product is human-in-the-loop: HERMES interpreteert en stelt mappings voor, Python bewaakt alle structurele state, en de frontend blijft de plek voor review, correctie en approval.
 
-1. **HERMES denkt.** De Timesheet Agent verzamelt context, interpreteert Clockify entries, kiest mappings, plant tijdvakken en bepaalt autonomie.
-2. **De frontend controleert.** De Streamlit UI toont het plan, laat corrigeren en accorderen, registreert feedback en voert uitsluitend goedgekeurde boekingen uit.
-3. **`booking_plan.json` is het contract.** Agent en UI communiceren via expliciete, versioned state.
-4. **Integratiecode is saai.** Clockify- en Simplicate-clients verbergen authenticatie, pagination, retries, foutafhandeling, ID-formattering, timezone- en andere API-quirks.
-5. **De SKILL bevat policy.** Autonomievoorwaarden, confidence-interpretatie, generalisatie en learning policy worden niet als businessdrempels in Python hardcoded.
-6. **Feedback is bewijs, geen directe wet.** Correcties worden append-only vastgelegd en kunnen door HERMES worden ontwikkeld van precedent naar candidate/confirmed rule.
-7. **Assignment-first, maar planning en beschikbaarheid zijn verschillend.** Een daadwerkelijk geplande assignment is sterk bewijs. Een undated assignment kan een geldig booking target zijn maar bewijst niet dat de gebruiker daarop vandaag gepland staat.
-8. **Writes zijn deterministisch.** Een approved snapshot wordt exact uitgevoerd; tools mogen niet stilletjes remappen.
-9. **Eén product, één repository, één versie.** Plugin, SKILL, gedeelde integratiecode en Streamlit frontend worden samen ontwikkeld en gedeployed. Ze hoeven operationeel niet onafhankelijk van HERMES te blijven draaien.
+## 2. Ontwerpprincipes
 
-## 2. Productarchitectuur
+1. **HERMES beslist mappings, niet state.** HERMES kiest mapping, autonomy tier en rationale voor expliciet aangeleverde work items.
+2. **Python bezit het booking plan.** Plan-ID, week, Clockify source facts, durations, coverage, revisions, mergegedrag en persistence worden deterministisch door de plugin beheerd.
+3. **De frontend controleert.** Streamlit toont het plan, laat corrigeren en accorderen, registreert feedback en voert uitsluitend goedgekeurde boekingen uit.
+4. **Clockify is source truth.** Description, client, project, tags, start/end en originele duur worden live door de plugin gelezen en niet door een LLM gereconstrueerd.
+5. **Integratiecode is saai.** Clockify- en Simplicate-clients verbergen authenticatie, pagination, retries, foutafhandeling, ID-formattering en timezone-quirks.
+6. **De SKILL bevat mappingpolicy.** AUTO/PROPOSE/ASK, evidence, confidence en learning policy blijven buiten structurele persistence-logica.
+7. **Feedback is bewijs, geen directe wet.** Correcties worden append-only vastgelegd en kunnen later tot rules promoveren.
+8. **Assignment-first, maar planning en beschikbaarheid zijn verschillend.** Een daadwerkelijk geplande assignment is sterker bewijs dan een slechts beschikbare booking candidate.
+9. **Writes zijn deterministisch.** Een approved snapshot wordt exact uitgevoerd; bookingcode mag niet stil remappen.
+10. **Rebuild is nooit destructief herstel.** Een nieuwe weekstate wordt eerst volledig gebouwd en gevalideerd; pas daarna mag de active pointer wisselen.
+11. **Rebuild vereist expliciete gebruikerintentie.** Een refresh mag nooit autonoom escaleren naar rebuild.
+12. **Eén product, één repository, één versie.** Plugin, runtime contract, frontend, core en documentatie worden samen ontwikkeld.
+
+## 3. Architectuur
 
 ```text
-Clockify REST + Simplicate REST + aanvullende toegestane context
+Clockify REST + bestaande Clerk state
+                  │
+                  ▼
+      timesheet_mapping_prepare
+                  │
+                  ▼
+          exacte work_items
+                  │
+                  ▼
+        HERMES Timesheet Agent
+        ├─ Timesheet SKILL
+        ├─ learned rules
+        ├─ precedents
+        └─ feedback history
+                  │
+          mapping decisions only
+                  │
+                  ▼
+       timesheet_mapping_apply
+                  │
+                  ▼
+      deterministic Python core
+      ├─ live Clockify re-fetch
+      ├─ source reconciliation
+      ├─ merge/rebuild
+      ├─ coverage validation
+      ├─ schema validation
+      └─ revision persistence
+                  │
+                  ▼
+             booking plan
+                  │
+                  ▼
+          Streamlit frontend
+       review / correct / approve
+           │                │
+           ▼                ▼
+      feedback events   approved snapshot
                               │
                               ▼
-                     HERMES Timesheet Agent
-                    ├─ Timesheet SKILL
-                    ├─ learned rules
-                    ├─ precedents
-                    └─ feedback history
+                    deterministic booking
                               │
                               ▼
-                     booking_plan.json
-                              │
-                              ▼
-                      Streamlit frontend
-                   review / correct / approve
-                    │                    │
-                    ▼                    ▼
-             feedback events       approved snapshot
-                                         │
-                                         ▼
-                                 deterministic booking
-                                         │
-                                         ▼
-                                     Simplicate
+                          Simplicate
 ```
 
-De codebase wordt als één HERMES Timesheet Clerk GitHub-repository beheerd en via de HERMES plugin-install/updateflow gedeployed. Streamlit kan technisch als apart proces draaien, maar is onderdeel van dezelfde productversie en lifecycle.
+Het booking plan is een persisted contract tussen core en frontend, maar niet langer een payload die HERMES zelf construeert.
 
-## 3. Verantwoordelijkheden
+## 4. Verantwoordelijkheden
 
-### 3.1 HERMES Timesheet Agent
+### 4.1 HERMES Timesheet Agent
 
-De agent:
+HERMES:
 
-- leest Clockify via de Timesheet Clerk tools;
-- leest Simplicate masterdata, geplande assignments, beschikbare assignment-kandidaten en bestaande boekingen via tools;
-- haalt aanvullende context op zoals toegestaan door de SKILL;
-- leest confirmed rules, precedenten en feedback;
-- consolideert Clockify entries alleen binnen dezelfde kalenderdag;
-- maakt de sequentiële dagplanning;
-- probeert per entry eerst een **geplande assignment** te matchen;
-- gebruikt beschikbare maar niet geplande assignments alleen als zwakkere fallback/override-evidence;
-- valt terug op directe klant → project → taak → uurcode-mapping wanneer geen geschikte assignment hoort te worden gebruikt;
-- bepaalt autonomy tier en mapping source;
-- schrijft atomair een nieuw `booking_plan.json`.
+- ontvangt alleen de work items waarvoor een mappingbeslissing nodig is;
+- leest runtime config, learning context en benodigde Simplicate-context;
+- kiest per work item `assignment` of `direct` mapping;
+- bepaalt `AUTO`, `PROPOSE` of `ASK`;
+- geeft rationale, confidence en mapping-source evidence terug;
+- verzint geen IDs;
+- verandert geen Clerk filesystem/state buiten de Clerk tools;
+- boekt nooit tijdens generation, refresh of rebuild.
 
-De agent boekt niet tijdens plan generation.
+HERMES maakt geen volledig planobject, bepaalt geen revisionnummer en kopieert geen Clockify source facts naar state.
 
-### 3.2 Streamlit frontend
+### 4.2 Deterministische Python core
+
+De core:
+
+- leest live Clockify source rows;
+- vergelijkt live source truth met stored source snapshots én daadwerkelijke plan coverage;
+- bepaalt CREATE, REFRESH of REBUILD;
+- maakt de exacte mapping-worklist;
+- valideert dat precies de vereiste mapping decisions worden teruggegeven;
+- bouwt canonical plan entries;
+- bewaart human-reviewed mappings tijdens incremental refresh;
+- reconcilieert verwijderde Clockify sources;
+- valideert volledige live Clockify coverage;
+- valideert het plancontract;
+- persist één nieuwe working revision;
+- beheert de active pointer.
+
+### 4.3 Streamlit frontend
 
 Streamlit:
 
-- leest één specifieke planversie;
+- opent een specifieke working planrevision;
 - toont week-, dag- en entry-status;
-- toont AUTO compact maar altijd corrigeerbaar;
-- laat duur, planning en mappings corrigeren;
+- laat mapping, duur, planning en ignore-status corrigeren;
 - registreert materiële correcties als feedback-events;
 - laat PROPOSE/ASK bevestigen;
-- maakt een immutable approval snapshot;
-- boekt alleen uit dit snapshot;
-- registreert per booking het resultaat.
+- maakt immutable approval snapshots;
+- toont planner job status;
+- kan expliciet een safe rebuild starten;
+- blijft Configuration, SKILL en State tonen wanneer geen actief plan beschikbaar is.
 
-Streamlit:
+Streamlit runt geen mappingintelligentie.
 
-- runt geen LLM;
-- bepaalt geen autonomie;
-- leert geen rules af;
-- implementeert geen Clockify/Simplicate transportquirks.
+### 4.4 Integratielaag
 
-### 3.3 Integratielaag
+De integratielaag bevat transport- en normalisatielogica voor Clockify en Simplicate. Secrets komen niet in plans, feedback, rules of logs terecht.
 
-De integratielaag bevat uitsluitend transport- en normalisatielogica.
+## 5. Planner workflow
 
-Huidige read-capabilities voor HERMES:
-
-- `timesheet_clockify_entries`
-- `timesheet_simplicate_context`
-- `timesheet_simplicate_assignments`
-- `timesheet_simplicate_available_assignments`
-- `timesheet_simplicate_booked_hours`
-
-Geplande write-capabilities voor de approval/backend-flow:
-
-- `simplicate_book_on_assignment(...)`
-- `simplicate_book_direct(...)`
-
-De agent krijgt geen vrije booking capability tijdens plan generation.
-
-## 4. Simplicate assignment-model
-
-### 4.1 Geplande assignment
-
-Een geplande assignment is:
-
-- gekoppeld aan de geconfigureerde medewerker via Simplicate `employees[]`;
-- niet blocked (`status.is_blocked = false`);
-- voorzien van zowel `start_date` als `end_date`;
-- overlappend met de gevraagde datum/periode.
-
-Deze set wordt gebruikt als primaire planning evidence en wordt door `timesheet_simplicate_assignments` teruggegeven.
-
-Simplicate documenteert in de Insights-laag dagelijkse `api_project_assignments_facts`. Die facts bevatten alleen assignments met start- én einddatum. De gewone REST API publiceert geen equivalente employee/day facts endpoint. Daarom gebruikt de REST-integratie de dated assignment range als planning evidence.
-
-### 4.2 Beschikbare assignment
-
-Een beschikbare assignment:
-
-- is gekoppeld aan de medewerker;
-- is niet blocked;
-- is, indien dated, geldig voor de gevraagde periode;
-- mag ook undated zijn.
-
-Een undated assignment mag een geldig handmatig booking target of mapping-kandidaat zijn, maar geldt **niet** als bewijs dat de gebruiker op die specifieke dag gepland staat.
-
-`timesheet_simplicate_available_assignments` levert deze kandidaten voor overrides en fallback mapping.
-
-### 4.3 Contextcontract
-
-`timesheet_simplicate_context` levert minimaal:
+### 5.1 Create / normal refresh
 
 ```text
-projects
-services
-hour_types
-planned_assignments
-available_assignments
+timesheet_mapping_prepare(rebuild=false)
+        │
+        ├─ no_op=true → deterministic summary → stop
+        │
+        └─ work_items
+              │
+              ▼
+       HERMES mapping decisions
+              │
+              ▼
+timesheet_mapping_apply(rebuild=false)
+              │
+              ▼
+      one validated revision
 ```
 
-Voor backwards compatibility mag `assignments` tijdelijk aliasen naar `planned_assignments`. Nieuwe logica gebruikt de expliciete velden.
+De rebuild flag is immutable voor de run. Een failure in een `rebuild=false` run mag nooit leiden tot een autonome retry met `rebuild=true`.
 
-### 4.4 Assignment-first beslisvolgorde
+### 5.2 Safe rebuild
+
+Een rebuild bestaat alleen na expliciete gebruikerintentie.
 
 ```text
-Clockify entry
+timesheet_mapping_prepare(rebuild=true)
+              │
+        alle live sources
+              │
+              ▼
+       HERMES decisions
+              │
+              ▼
+timesheet_mapping_apply(rebuild=true)
+              │
+              ▼
+   complete replacement candidate
+              │
+     coverage + schema valid?
+          │           │
+         nee          ja
+          │           │
+   oude state blijft  persist replacement
+                      │
+                      ▼
+                 active switch
+```
+
+Het oude working plan wordt niet vooraf verwijderd.
+
+## 6. Clockify source integrity
+
+Clockify source truth bevat minimaal:
+
+- source ID;
+- description;
+- client;
+- project;
+- tags;
+- start;
+- end;
+- original duration.
+
+Bij apply wordt Clockify opnieuw live gelezen. Daardoor kan een oude LLM-response geen stale titel, duur of timestamp terugschrijven.
+
+### 6.1 Changed source
+
+Een gewijzigde live source wordt opnieuw als work item aangeboden. Python schrijft de nieuwe canonical source facts weg. Een eerder human-reviewed booking target blijft behouden tenzij de reviewstate dat niet toestaat.
+
+### 6.2 Removed source
+
+Removed detection is gebaseerd op:
+
+```text
+plan covered source IDs - live Clockify source IDs
+```
+
+Snapshot history is aanvullende evidence, maar niet de enige bron.
+
+Gedrag:
+
+- single-source row verdwenen → deterministisch verwijderen;
+- legacy aggregate waarvan alle sources verdwenen → deterministisch verwijderen;
+- legacy aggregate waarvan slechts enkele sources verdwenen → `requires_explicit_rebuild`;
+- `requires_explicit_rebuild` stopt de run; HERMES mag niet autonoom rebuilden.
+
+## 7. Simplicate assignment-model
+
+### 7.1 Geplande assignment
+
+Een geplande assignment:
+
+- hoort bij de geconfigureerde medewerker;
+- is niet blocked/done;
+- heeft geldige start- en einddatum;
+- overlapt de relevante entrydatum/periode.
+
+Dit is primaire planning evidence.
+
+### 7.2 Booking candidate
+
+Een booking candidate:
+
+- hoort bij de medewerker;
+- is geldig en niet blocked/done;
+- is gekoppeld aan een actief project en geschikte service;
+- mag undated zijn.
+
+Een undated candidate is een mogelijk booking target, maar geen bewijs dat de gebruiker op die dag gepland stond.
+
+### 7.3 Mappingvolgorde
+
+```text
+Clockify work item
     ↓
-Geplande assignments voor entry-datum
+geplande assignments
     ↓
-Eén betrouwbare match?
-    ├─ Ja → booking_mode = assignment
-    └─ Nee
+betrouwbare match?
+    ├─ ja → assignment mode
+    └─ nee
          ↓
-Andere evidence + beschikbare assignment-kandidaten
+andere evidence + booking candidates
          ↓
-Geschikte assignment voldoende onderbouwd?
-    ├─ Ja → PROPOSE/ASK of AUTO volgens SKILL/evidence
-    └─ Nee → booking_mode = direct
-             Klant → Project → Taak → Uurcode
+voldoende onderbouwd?
+    ├─ ja → assignment mode volgens tier policy
+    └─ nee → direct mapping
 ```
 
-Harde regel: een undated assignment wordt nooit als `planned` gepresenteerd.
+## 8. Mapping decision contract
 
-## 5. UI-regels
+Per work item levert HERMES precies één decision:
 
-### 5.1 Weekuren
-
-- `contract_hours_default` staat standaard op **36,0 uur**;
-- iedere week heeft een aanpasbare `target_hours`;
-- volledigheidschecks vergelijken tegen `target_hours`, niet tegen een hardcoded 36/40 uur;
-- korte weken, verlof en feestdagen kunnen zo zonder configuratiewijziging worden verwerkt.
-
-### 5.2 Assignment override
-
-Wanneer een assignment is geselecteerd:
-
-- toont de UI een assignment-dropdown;
-- label is minimaal `Klant · Project · Assignment`;
-- klant, project, taak/service en uurcode zijn read-only afgeleide informatie;
-- deze onderliggende velden zijn niet afzonderlijk wijzigbaar;
-- override betekent: andere assignment kiezen of expliciet overschakelen naar direct mapping.
-
-De dropdown mag zowel geplande als beschikbare geldige override-kandidaten bevatten, maar moet planningstatus visueel/semantisch kunnen onderscheiden.
-
-### 5.3 Directe mapping
-
-Alleen bij `booking_mode = direct` verschijnt de cascade:
-
-```text
-Klant → Project → Taak → Uurcode
+```json
+{
+  "source_id": "clockify-id",
+  "tier": "AUTO",
+  "booking_mode": "direct",
+  "direct_mapping": {
+    "project_id": "...",
+    "service_id": "...",
+    "hour_type_id": "..."
+  },
+  "ignored": false,
+  "why": "mapping evidence",
+  "why_not_auto": "",
+  "confidence": 0.98
+}
 ```
 
-Elke dropdown toont uitsluitend waarden die geldig zijn binnen de keuze erboven.
+AUTO vereist een compleet geldig target. PROPOSE/ASK mogen unresolved blijven volgens het plancontract.
 
-## 6. Leerloop en autonomie
+## 9. Review en learning
 
-Kennisniveaus:
+Feedback lifecycle:
 
 ```text
 feedback event → precedent → candidate rule → confirmed rule
@@ -211,203 +290,108 @@ feedback event → precedent → candidate rule → confirmed rule
        └──────── success/correction feedback ─┘
 ```
 
-Feedback is append-only. Rules zijn afgeleid en mogen worden gedeactiveerd of gedegradeerd.
+Een gecorrigeerde AUTO is sterk negatief bewijs. Semantische similarity alleen levert geen AUTO op tenzij runtime policy dat expliciet toestaat.
 
-Autonomie gebruikt `AUTO`, `PROPOSE` en `ASK` en is evidence-based. De SKILL bepaalt onder andere:
+Human review is tijdens incremental refresh sterker dan een nieuwe agent proposal voor booking fields.
 
-- bewijsvereisten voor AUTO;
-- scope en match-specificity;
-- recency;
-- conflicting evidence;
-- hoe correcties rules degraderen;
-- rol van confidence;
-- verschil in bewijskracht tussen geplande en alleen beschikbare assignments.
-
-Semantische similarity alleen levert geen AUTO op. Een undated assignment alleen levert geen planning-evidence op.
-
-Een gecorrigeerde AUTO is zwaar negatief bewijs.
-
-## 7. `booking_plan.json`
-
-Lifecycle:
+## 10. Plan lifecycle
 
 ```text
-GENERATING → DRAFT → IN_REVIEW → APPROVED → BOOKING → BOOKED
-                              ↘ SUPERSEDED / FAILED
+DRAFT → IN_REVIEW → APPROVED → BOOKING → BOOKED
+                  ↘ SUPERSEDED / FAILED
 ```
 
-Minimale metadata:
+Working revisions zijn mutable via nieuwe immutable revisionfiles. Approved snapshots, receipts en feedback zijn aparte durable artifacts.
+
+Minimale planmetadata:
 
 ```json
 {
   "schema_version": 1,
-  "plan_id": "2026-W34-<uuid>",
+  "plan_id": "plan-2026-08-24-r-...",
   "revision": 1,
   "status": "DRAFT",
-  "generated_at": "2026-08-21T18:00:00Z",
-  "week": {"monday": "2026-08-17", "sunday": "2026-08-23"},
+  "week": {"monday": "2026-08-24", "sunday": "2026-08-30"},
   "contract_hours_default": 36.0,
   "target_hours": 36.0,
   "entries": []
 }
 ```
 
-Een entry bevat minimaal:
+## 11. Approval, booking en idempotency
 
-- stabiele `entry_id`;
-- Clockify source IDs;
-- datum en source context;
-- originele/geplande duur;
-- planned start/end;
-- `booking_mode`: `assignment` of `direct`;
-- assignment ID/context en planningstatus indien relevant;
-- directe mappingvelden indien relevant;
-- tier/source/confidence;
-- compacte `why` en `why_not_auto`;
-- reconciliation state;
-- review/ignore/booking state.
+Booking vindt alleen plaats vanuit een immutable approved snapshot.
 
-Simplicate transportprefixes komen niet in dit plan voor.
+Bij toekomstige live booking:
 
-## 8. Approval, booking en idempotency
+1. validate review readiness;
+2. create/read immutable approval snapshot;
+3. build exact Simplicate payloads;
+4. preflight existing booked hours/receipts;
+5. execute only non-duplicate rows;
+6. persist per-entry receipt;
+7. never blindly replay an entire partial-failure batch.
 
-Bij `Boek Dag` of `Boek Week`:
+Live Simplicate writes blijven uitgeschakeld totdat deze flow gecontroleerd gevalideerd is.
 
-1. valideert Streamlit review-readiness;
-2. controleert het geopende `plan_id` + revision;
-3. schrijft feedback-events;
-4. maakt een immutable approved snapshot;
-5. gebruikt uitsluitend dit snapshot voor writes;
-6. gebruikt voor assignment-mode de assignment-booking capability;
-7. gebruikt voor direct-mode de directe booking capability;
-8. slaat per write response-ID/status op;
-9. herhaalt bij partial failure niet blind de hele batch.
+## 12. Background planner lifecycle
 
-Booking receipts bevatten minimaal plan/entry/source IDs, approved target, datum/duur, Simplicate response ID en timestamp.
+Frontend planner runs gebruiken een supervised runner.
 
-Reconciliatievoorkeur:
+```text
+STARTING → RUNNING → SUCCEEDED
+                   ↘ FAILED
+```
 
-1. expliciete source/reference link indien beschikbaar;
-2. lokale receipt met Simplicate ID;
-3. sterke samengestelde fingerprint;
-4. alleen bij uniciteit: datum + booking target + duur + note/fingerprint.
+Een verdwenen runner wordt `FAILED`; stoppen van een proces is niet hetzelfde als succesvolle plangeneratie.
 
-Ambigue matches worden nooit automatisch `BOOKED`.
+## 13. State en recovery
 
-## 9. Timeline en consolidatie
+Default production state:
 
-- Clockify entries worden nooit over kalenderdagen heen geconsolideerd.
-- De agent maakt de initiële sequentiële dagplanning.
-- Een handmatige duurwijziging in Streamlit mag deterministisch opvolgende tijdvakken van dezelfde dag verschuiven.
-- Dit is reken-/presentatielogica, geen mappingintelligentie.
+```text
+/home/hermes/.hermes/timesheet-clerk
+```
 
-## 10. Fail-safe gedrag
+Belangrijke artifacts:
 
-- ontbrekende/ongeldige masterdata blokkeert booking;
-- conflicting rules verlagen autonomie;
-- API-fouten veranderen geen state alsof een write geslaagd is;
-- partial booking behoudt per-entry status;
-- approved snapshots worden niet overschreven;
-- fouttypen onderscheiden minimaal validation, auth, rate limit, transient en permanent;
-- de agent verzint geen IDs of assignments.
+```text
+config.json
+SKILL.md
+active_plan.json
+plans/
+approvals/
+receipts/
+feedback_events.jsonl
+rules.json
+logs/
+planner-sync-status.json
+```
 
-## 11. Deployment en configuratie
+Als `active_plan.json` ontbreekt terwijl stored plans bestaan, mag de pointer deterministisch naar het nieuwste stored plan worden hersteld.
 
-### 11.1 GitHub-first
+## 14. Deployment en versiebeheer
 
-De canonical repository is:
+Canonical repository:
 
 ```text
 bramvrensen/Hermes-Timesheet-Clerk
 ```
 
-Installatie en updates verlopen via HERMES' pluginmechanisme vanaf GitHub. `main` is de deploybare branch tijdens de huidige bouwfase.
+Plugin, frontend, SKILL contract, docs en tests delen één productversie. CI compileert en test iedere push naar `main`.
 
-### 11.2 Eén codebase
+## 15. Acceptatiecriteria
 
-De repository bevat uiteindelijk:
+De plannerarchitectuur is geslaagd wanneer:
 
-```text
-Hermes-Timesheet-Clerk/
-├── plugin.yaml
-├── __init__.py
-├── plugin.py
-├── timesheet_clerk/        # gedeelde integratie/core
-├── skills/timesheet-clerk/SKILL.md
-├── frontend/               # Streamlit
-├── docs/
-└── tests/
-```
-
-De frontend mag technisch een apart proces zijn, maar hoeft niet beschikbaar te blijven wanneer HERMES zelf uitvalt. Beide vormen samen één functioneel product.
-
-### 11.3 HERMES pluginconfig
-
-De plugin gebruikt HERMES Keys / `requires_env` voor credentials:
-
-```text
-CLOCKIFY_API_KEY
-CLOCKIFY_WORKSPACE_ID
-CLOCKIFY_USER_ID
-SIMPLICATE_BASE_URL
-SIMPLICATE_API_KEY
-SIMPLICATE_API_SECRET
-SIMPLICATE_EMPLOYEE_ID
-```
-
-Secrets worden nooit naar plans, feedback, rules of logs geschreven.
-
-### 11.4 Frontend route en login
-
-De beoogde route is:
-
-```text
-https://<hermes-host>/timesheet
-```
-
-De pagina moet achter een login staan. Een eigen Clerk-login is toegestaan. De exacte Caddy-configuratie is deploymenttechniek en geen functionele businesslogica.
-
-## 12. Open technische validaties vóór writes
-
-Voor `simplicate_book_on_assignment(...)` moet nog tegen de live Simplicate API worden vastgesteld:
-
-- of assignment booking een eigen endpoint/methode heeft of `POST /hours/hours` gebruikt;
-- welke velden verplicht zijn;
-- of project/service/hour type bij assignment booking hoeven te worden meegestuurd;
-- response-ID en foutgedrag;
-- ID-prefix- en timezone-quirks.
-
-De eerder werkende Antigravity-code blijft een technische referentie, maar is niet automatisch het functionele ontwerp.
-
-## 13. Bouwvolgorde
-
-1. API-only integratielaag en HERMES plugin read-tools.
-2. Live validatie Clockify/Simplicate reads en assignmentsemantiek.
-3. Plan-, feedback-, rules- en receipt-schemas.
-4. Plan repository/lifecycle/versioning.
-5. Streamlit review-UI.
-6. Feedback/learning persistence.
-7. Validatie en bouw van assignment/direct write-paths.
-8. Idempotente bookingflow.
-9. End-to-end dry run.
-10. Controlled activation van Simplicate writes.
-
-## 14. Acceptatiecriteria
-
-Het ontwerp is geslaagd wanneer:
-
-- HERMES live Clockify- en Simplicate-context via de plugin kan lezen;
-- geplande en alleen beschikbare assignments niet worden verward;
-- de SKILL geen transportquirks kent;
-- tools geen autonome businessbeslissingen nemen;
-- Streamlit geen LLM/mappingpolicy bevat;
-- weeknorm per week aanpasbaar is met 36 uur als default;
-- assignment override via `Klant · Project · Assignment` werkt;
-- assignment-keuze onderliggende mappingvelden read-only maakt;
-- directe mapping alleen geldige cascades toont;
-- feedback traceerbaar en append-only is;
-- AUTO uitsluitend uit actuele SKILL-policy/evidence ontstaat;
-- een retry geen dubbele booking veroorzaakt;
-- approved planversies niet ongemerkt worden vervangen;
-- frontend en plugin als één GitHub-versie worden ontwikkeld en gedeployed;
-- writes pas worden geactiveerd na live validatie van de Simplicate assignment-bookingsemantiek.
+- HERMES geen volledig plan kan fabriceren;
+- Clockify source facts uitsluitend uit live integration data komen;
+- gewijzigde sources betrouwbaar worden bijgewerkt;
+- verwijderde sources veilig worden gereconcilieerd;
+- ambiguity bij legacy aggregates fail-closed is;
+- refresh nooit autonoom naar rebuild escaleert;
+- failed rebuild bestaande state intact laat;
+- human-reviewed mappings incremental behouden blijven;
+- frontend state ook zonder active pointer herstelbaar is;
+- background job status een echte terminal success/failure state heeft;
+- approvals en toekomstige bookings deterministisch en idempotent blijven.
