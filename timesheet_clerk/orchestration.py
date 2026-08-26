@@ -34,7 +34,23 @@ _REVIEW_FIELDS = (
 
 
 def find_working_week(repo: PlanRepository, monday: str, sunday: str) -> dict[str, Any] | None:
-    """Return the newest mutable plan for an exact week, independent of active pointer."""
+    """Return the authoritative mutable plan for an exact week.
+
+    Prefer the active pointer when it already points at the requested week. This
+    avoids ambiguity when a safe rebuild leaves an older plan in the catalog.
+    """
+    try:
+        active = repo.get_active()
+        active_week = active.get("week") or {}
+        if (
+            str(active_week.get("monday") or "") == monday
+            and str(active_week.get("sunday") or "") == sunday
+            and active.get("status") in {"DRAFT", "IN_REVIEW"}
+        ):
+            return active
+    except (PlanNotFound, KeyError, ValueError):
+        pass
+
     matches: list[dict[str, Any]] = []
     for summary in repo.list_plans(limit=200):
         week = summary.get("week") or {}
@@ -71,12 +87,17 @@ def prepare_mapping_work(
         mode = "REBUILD" if existing is not None else "CREATE"
     else:
         delta = source_delta(existing, clockify_entries)
-        required_ids = {
-            str(row.get("id"))
-            for key in ("new_entries", "changed_entries", "unprocessed_entries")
-            for row in delta.get(key) or []
-            if row.get("id")
-        }
+        # Legacy plans without immutable source snapshots need a deterministic
+        # baseline write, not a wholesale remap. Only genuinely unresolved legacy
+        # entries still become mapping work.
+        required_ids = set()
+        if not delta.get("requires_rebaseline"):
+            required_ids.update(
+                str(row.get("id"))
+                for key in ("new_entries", "changed_entries", "unprocessed_entries")
+                for row in delta.get(key) or []
+                if row.get("id")
+            )
         for entry in existing.get("entries") or []:
             if is_pending_mapping(entry):
                 required_ids.update(str(v) for v in entry.get("clockify_source_ids") or [] if str(v) in by_id)
@@ -94,6 +115,7 @@ def prepare_mapping_work(
             "human_reviewed": bool(prior and prior.get("review_state") in {"confirmed", "corrected", "skipped"}),
         })
 
+    requires_baseline = bool(existing is not None and delta.get("requires_rebaseline"))
     return {
         "mode": mode,
         "week": {"monday": monday, "sunday": sunday},
@@ -102,11 +124,12 @@ def prepare_mapping_work(
         "work_count": len(work_items),
         "work_items": work_items,
         "missing_source_ids": list(delta.get("missing_source_ids") or []),
+        "requires_baseline_write": requires_baseline,
         "source_delta": {
             key: delta.get(key)
             for key in ("has_changes", "requires_rebaseline", "new_count", "changed_count", "missing_count", "unprocessed_count", "unchanged_count")
         },
-        "no_op": mode == "REFRESH" and not work_items and not delta.get("missing_source_ids"),
+        "no_op": mode == "REFRESH" and not work_items and not delta.get("missing_source_ids") and not requires_baseline,
         "summary": plan_summary(existing, source_delta=delta) if existing else None,
     }
 
@@ -144,12 +167,22 @@ def apply_mapping_decisions(
     if rebuild or existing is None:
         candidate = _build_new_plan(existing, by_id, decision_by_id, monday=monday, sunday=sunday)
         saved = repo.create(validate_plan(candidate), make_active=True)
-        return {"plan": saved, "summary": plan_summary(saved), "mode": work["mode"]}
+        superseded_plan_id = None
+        if rebuild and existing is not None and existing["plan_id"] != saved["plan_id"]:
+            try:
+                old = deepcopy(existing)
+                old["status"] = "SUPERSEDED"
+                repo.save_revision(old, expected_revision=int(existing["revision"]), make_active=False)
+                superseded_plan_id = existing["plan_id"]
+            except (StateConflict, OSError):
+                # Replacement is already safely active. Failing to annotate the
+                # old plan must never roll back or misreport a successful rebuild.
+                superseded_plan_id = None
+        return {"plan": saved, "summary": plan_summary(saved), "mode": work["mode"], "superseded_plan_id": superseded_plan_id}
 
     candidate = deepcopy(existing)
     candidate["status"] = "IN_REVIEW"
     candidate["source_sync_at"] = utc_now()
-    candidate["clockify_source_snapshots"] = {}
 
     missing_source_ids = set(str(v) for v in work.get("missing_source_ids") or [])
     new_entries: list[dict[str, Any]] = []
@@ -218,8 +251,10 @@ def _entry_from_decision(source: dict[str, Any], decision: dict[str, Any], *, pr
     start = source.get("start")
     end = source.get("end")
     duration = float(source.get("duration_seconds") or 0)
+    prior_source_ids = [str(v) for v in (prior or {}).get("clockify_source_ids") or []]
+    reusable_entry_id = (prior or {}).get("entry_id") if len(prior_source_ids) == 1 else None
     row: dict[str, Any] = {
-        "entry_id": str((prior or {}).get("entry_id") or f"clockify-{source_id}"),
+        "entry_id": str(reusable_entry_id or f"clockify-{source_id}"),
         "clockify_source_ids": [source_id],
         "date": _local_date(start),
         "source": deepcopy(source),
@@ -246,7 +281,11 @@ def _entry_from_decision(source: dict[str, Any], decision: dict[str, Any], *, pr
         row["assignment"] = {}
 
     if prior and prior.get("review_state") in {"confirmed", "corrected", "skipped"}:
-        for field in _REVIEW_FIELDS:
+        # A legacy consolidated row can map multiple Clockify sources. Preserve its
+        # reviewed booking target, but never copy aggregate duration/time into each
+        # split source row.
+        fields = _REVIEW_FIELDS if len(prior_source_ids) == 1 else ("booking_mode", "assignment", "direct_mapping", "ignored", "review_state")
+        for field in fields:
             if field in prior:
                 row[field] = deepcopy(prior[field])
         row["review_preserved_on_sync"] = True
