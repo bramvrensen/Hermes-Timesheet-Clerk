@@ -2,6 +2,30 @@
 
 `DESIGN.md` is the functional source of truth. Deployment details live in `DEPLOYMENT.md`.
 
+## 0.6.5 service-scoped hour type selection
+
+0.6.5 fixes direct-mapping review offering hour types that do not belong to the selected Simplicate Task / service.
+
+The previous frontend preferred `all_hour_types`, which meant the Hour type dropdown could contain valid global masterdata values that were not valid for the selected service. That creates combinations Simplicate may reject during booking.
+
+The UI now uses `timesheet_clerk.ui_choices.hour_types_for_service()` with a strict invariant:
+
+```text
+valid hour type
+    ⇔ hour_type.service_id == selected service_id
+```
+
+Behaviour:
+
+- only `review_context.hour_types` with an exact matching `service_id` are shown;
+- global/unscoped `all_hour_types` are not used as fallback;
+- duplicate hour-type IDs are removed;
+- the configured preferred hour type is only sorted to the top inside the valid scoped set;
+- if a selected Task / service has no scoped hour types, the UI shows a warning and leaves the mapping incomplete;
+- an incomplete mapping cannot be accepted/saved as a resolved direct mapping.
+
+Regression coverage verifies both exact service filtering and the absence of a global fallback.
+
 ## 0.6.4 review scheduling and frontend performance
 
 0.6.4 consolidates review mutations and planned-time scheduling into deterministic Python behaviour.
@@ -181,6 +205,7 @@ Regression coverage includes:
 - reflow after duration changes;
 - safe restore to ASK/PENDING;
 - unclassified-source ignore guard;
+- strict Task/service → Hour type scoping with no global fallback;
 - supervised planner jobs and dead-runner detection.
 
 ## Remaining write milestone
