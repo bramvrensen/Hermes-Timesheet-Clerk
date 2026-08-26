@@ -138,8 +138,6 @@ def test_removed_source_is_reconciled_even_when_snapshot_baseline_lost_it(tmp_pa
         decisions=[direct_decision("c1"), direct_decision("c2")],
     )["plan"]
 
-    # Simulate the legacy corruption seen in production: the plan still covers c2,
-    # but the immutable snapshot baseline no longer contains c2.
     corrupted = deepcopy(created)
     corrupted["clockify_source_snapshots"].pop("c2")
     repo.save_revision(corrupted, expected_revision=1)
@@ -181,3 +179,44 @@ def test_partial_loss_from_legacy_consolidated_entry_requires_explicit_rebuild(t
             repo, [source("c1")], monday="2026-08-24", sunday="2026-08-30", decisions=[]
         )
     assert "Do not retry with rebuild=true automatically" in str(exc.value)
+
+
+def test_ignored_decision_needs_no_booking_mode_or_target(tmp_path, monkeypatch):
+    monkeypatch.setattr(orchestration, "read_config", _cfg)
+    repo = PlanRepository(tmp_path)
+    ignored = {
+        "source_id": "c1",
+        "tier": "AUTO",
+        "ignored": True,
+        "why": "Travel time is excluded from booking",
+        "confidence": 1.0,
+    }
+
+    result = orchestration.apply_mapping_decisions(
+        repo, [source(description="Reistijd")], monday="2026-08-24", sunday="2026-08-30", decisions=[ignored]
+    )
+    entry = result["plan"]["entries"][0]
+    assert entry["ignored"] is True
+    assert entry["booking_mode"] == "direct"
+    assert entry["direct_mapping"] == {}
+    assert entry["assignment"] == {}
+    assert entry["billable"] is False
+
+
+def test_ignored_decision_empty_booking_mode_is_normalized(tmp_path, monkeypatch):
+    monkeypatch.setattr(orchestration, "read_config", _cfg)
+    repo = PlanRepository(tmp_path)
+    ignored = {
+        "source_id": "c1",
+        "tier": "AUTO",
+        "ignored": True,
+        "booking_mode": "",
+        "direct_mapping": {},
+        "why": "Lunch is excluded",
+    }
+    result = orchestration.apply_mapping_decisions(
+        repo, [source(description="Lunch")], monday="2026-08-24", sunday="2026-08-30", decisions=[ignored]
+    )
+    entry = result["plan"]["entries"][0]
+    assert entry["ignored"] is True
+    assert entry["booking_mode"] == "direct"
