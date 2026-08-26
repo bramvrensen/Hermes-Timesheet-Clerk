@@ -7,7 +7,7 @@ import shutil
 import sys
 from pathlib import Path
 
-__version__ = "0.6.3"
+__version__ = "0.6.4"
 
 # Keep only the latest two mutable working revisions by default. Approval
 # snapshots, receipts and feedback are stored separately and remain immutable.
