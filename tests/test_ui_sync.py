@@ -32,6 +32,15 @@ def test_upgrade_sync_prompt_repairs_coverage_before_mapping():
     assert "Never book hours to Simplicate" in upgraded
 
 
+def test_upgrade_sync_prompt_processes_changed_existing_entries():
+    upgraded = ui_sync._upgrade_sync_prompt("sync week")
+    assert "source_delta.changed_entries" in upgraded
+    assert "entries covering changed Clockify source IDs" in upgraded
+    assert "canonical Clockify source facts" in upgraded
+    assert "description" in upgraded
+    assert "original duration" in upgraded
+
+
 def test_launch_sync_only_starts_hermes(monkeypatch, tmp_path):
     calls=[]
     class Child: pid=1234
@@ -43,4 +52,5 @@ def test_launch_sync_only_starts_hermes(monkeypatch, tmp_path):
     assert sent_prompt.startswith("sync week")
     assert "timesheet_source_rebaseline" in sent_prompt
     assert "map ONLY entries that were created" in sent_prompt
+    assert "source_delta.changed_entries" in sent_prompt
     assert "hermes" in calls[0][0][0]
