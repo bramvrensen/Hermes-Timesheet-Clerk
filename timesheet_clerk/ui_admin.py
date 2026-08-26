@@ -75,7 +75,7 @@ def _fresh_start_active_week(repo: PlanRepository) -> None:
                 "Do not attempt any further reset or filesystem manipulation. Never book hours to Simplicate."
             )
             clear_sync_status(repo.root)
-            launch_sync(root=repo.root, profile=profile, prompt=prompt)
+            launch_sync(root=repo.root, profile=profile, prompt=prompt, apply_refresh_contract=False)
             st.success(
                 f"Fresh Start removed {len(result.get('removed_plan_ids') or [])} working plan(s). Full rebuild started via {profile}."
             )
