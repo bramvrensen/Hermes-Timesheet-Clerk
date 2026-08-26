@@ -7,7 +7,6 @@ from typing import Any
 
 import streamlit as st
 
-from . import __version__
 from .runtime import (
     purge_expired_artifacts,
     read_config,
@@ -19,9 +18,26 @@ from .runtime import (
 from .storage import PlanRepository, repair_shared_permissions
 
 
+_PLUGIN_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _installed_version() -> str:
+    """Read the authoritative installed version from plugin.yaml on every render."""
+    manifest = _PLUGIN_ROOT / "plugin.yaml"
+    try:
+        for raw in manifest.read_text(encoding="utf-8").splitlines():
+            if raw.startswith("version:"):
+                value = raw.split(":", 1)[1].strip()
+                if value:
+                    return value
+    except OSError:
+        pass
+    return "unknown"
+
+
 def render_config(repo: PlanRepository, default_skill: Path) -> None:
     st.subheader("Configuration")
-    st.caption(f"Timesheet Clerk v{__version__}")
+    st.caption(f"Timesheet Clerk v{_installed_version()}")
     cfg = read_config()
     c1, c2 = st.columns(2)
     with c1:
@@ -82,7 +98,7 @@ def render_config(repo: PlanRepository, default_skill: Path) -> None:
         marker = repo.root / "frontend-restart.request"
         marker.write_text("restart\n", encoding="utf-8")
         st.success("Frontend restart requested. The managed launcher will restart Streamlit within a few seconds.")
-    st.caption("Plugin updates are not driven by this frontend. Use the Hermes-native `timesheet_update` tool; frontend restart is only for Streamlit code changes.")
+    st.caption("Plugin updates are driven by the Hermes-native `timesheet_update` tool. The displayed version is read directly from the installed plugin manifest.")
 
 
 def render_skill(repo: PlanRepository, default_skill: Path) -> None:
