@@ -18,20 +18,28 @@ _LEGACY_STATE = Path("/home/hermes/.hermes/profiles/atlas/timesheet-clerk")
 
 
 def _bootstrap_shared_state() -> None:
-    """Use agent-independent state and migrate the old Atlas-scoped state once."""
+    """Select Hermes shared state only when actually running inside Hermes.
+
+    Importing this package must be side-effect free on developer/CI machines. The
+    generic storage layer already falls back to ``$HOME/.hermes/timesheet-clerk``.
+    """
     configured = str(os.environ.get("TIMESHEET_CLERK_STATE_DIR") or "").strip()
+    hermes_home_exists = Path("/home/hermes").is_dir()
+
     if configured:
         root = Path(configured).expanduser()
-    else:
+    elif hermes_home_exists:
         if not _SHARED_STATE.exists() and _LEGACY_STATE.exists():
             _SHARED_STATE.parent.mkdir(parents=True, exist_ok=True)
             try:
                 shutil.move(str(_LEGACY_STATE), str(_SHARED_STATE))
             except OSError:
                 shutil.copytree(_LEGACY_STATE, _SHARED_STATE, dirs_exist_ok=True)
-        _SHARED_STATE.mkdir(parents=True, exist_ok=True)
         os.environ["TIMESHEET_CLERK_STATE_DIR"] = str(_SHARED_STATE)
         root = _SHARED_STATE
+    else:
+        return
+
     root.mkdir(parents=True, exist_ok=True)
 
     argv = " ".join(str(v) for v in sys.argv).lower()
