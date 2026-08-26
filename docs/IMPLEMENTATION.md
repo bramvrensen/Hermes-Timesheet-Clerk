@@ -2,6 +2,47 @@
 
 `DESIGN.md` is the functional source of truth. Deployment details live in `DEPLOYMENT.md`.
 
+## 0.6.6 reviewed-entry consolidation and human duration presentation
+
+0.6.6 adds a deterministic post-review consolidation step and removes decimal-hour notation from normal review presentation.
+
+### Reviewed-entry consolidation
+
+`timesheet_clerk.consolidation.consolidate_reviewed_entries()` runs after a human review mutation and after the canonical day reflow.
+
+Two adjacent rows may merge only when all of the following are true:
+
+- same day;
+- neither row is ignored or already booked;
+- both rows are `RESOLVED`;
+- both rows were explicitly human `confirmed` or `corrected`;
+- planned end of the first row equals planned start of the second row;
+- exact same booking mode and booking target IDs;
+- exact same billable state;
+- same normalized Clockify description/client/project context.
+
+This allows cases such as two restored Cyclovriend `Reistijd` rows, each one hour and manually mapped to the same travel code, to become one `09:00–11:00` two-hour booking block. It does not merge unrelated work merely because the Simplicate target happens to be the same.
+
+A merged row keeps all underlying `clockify_source_ids`. Canonical Clockify snapshots remain unchanged, so source coverage is preserved and `split_consolidated_entry()` can still reconstruct the individual source rows later.
+
+When consolidation is triggered by editing the second row, that edited `entry_id` is retained as the merged-row ID. This keeps frontend scroll/review feedback stable after save.
+
+### Human duration display
+
+`timesheet_clerk.ui_time.format_duration()` formats presentation time as clock-style human duration instead of decimal hours:
+
+```text
+900 s   → 15 min
+1800 s  → 30 min
+3600 s  → 1u
+5400 s  → 1u 30 min
+7200 s  → 2u
+```
+
+Review cards, Clockify source-duration labels, day summaries, week metrics and target-difference warnings use this formatter. Planned start/end continue to use `HH:MM` ranges. Numeric hour inputs remain numeric controls for efficient editing, but passive time presentation no longer displays values such as `0.25h` or `0.50h`.
+
+Regression tests cover safe consolidation, non-consolidation for different targets/unreviewed peers, apply-review consolidation after the second human correction, and human duration labels.
+
 ## 0.6.5 service-scoped hour type selection
 
 0.6.5 fixes direct-mapping review offering hour types that do not belong to the selected Simplicate Task / service.
@@ -12,7 +53,7 @@ The UI now uses `timesheet_clerk.ui_choices.hour_types_for_service()` with a str
 
 ```text
 valid hour type
-    ⇔ hour_type.service_id == selected service_id
+    ⇔ hour_type.service_id == selected service id
 ```
 
 Behaviour:
@@ -43,53 +84,21 @@ For every day:
 - Clockify source timestamps remain untouched inside source payload/snapshots;
 - the same scheduler runs after CREATE/REFRESH and after human review mutations.
 
-This removes drift between initial planner output and later frontend edits.
-
 ### Restore safety
 
-A skipped/ignored row intentionally has no required booking target. Restoring such a row used to flip only `ignored=false`, causing contract validation to treat the previous AUTO/direct placeholder as a resolved entry and fail on missing project/service/hour-type IDs.
-
-0.6.4 changes restore semantics:
-
-```text
-ignored/skipped + no complete target
-          ↓ restore
-ASK + PENDING + review_state=None
-```
-
-The restored row remains source-covered and immediately returns to human mapping review instead of fabricating a target.
+A skipped/ignored row intentionally has no required booking target. Restoring such a row without a complete target reopens it as `ASK + PENDING + review_state=None` instead of fabricating a resolved booking target.
 
 ### Duration control fix
 
-Streamlit forbids assigning to a widget key after that widget was instantiated in the same run. The old +/- duration buttons wrote directly to the `number_input` session key and raised `StreamlitAPIException`.
-
-0.6.4 moves those updates to `on_click` callbacks, which execute before widget recreation on the rerun.
+The +/- duration controls use Streamlit callbacks instead of mutating an instantiated widget key.
 
 ### Unknown is not ignored
 
-Unclassified time is not a valid exclusion reason. Recognized unknown placeholders such as blank descriptions, `?`, `??`, `?? -- ??`, `unknown` and `onbekend` are normalized to non-ignored `ASK/PENDING` even if HERMES incorrectly returns `ignored=true`.
-
-Ignored remains reserved for positively identified non-bookable work such as configured lunch/travel exclusions.
+Blank/unknown descriptions such as `?`, `??`, `?? -- ??`, `unknown` and `onbekend` are normalized to non-ignored `ASK/PENDING` even if HERMES incorrectly returns `ignored=true`.
 
 ### Simplicate UI context performance
 
-The review UI previously fetched four independent Simplicate datasets sequentially:
-
-1. projects;
-2. services;
-3. hour types;
-4. dated booking assignments.
-
-A cold load therefore paid roughly the sum of all four API latencies, observed at about 15 seconds in production.
-
-0.6.4 changes `load_review_context()` to:
-
-- fetch all four datasets concurrently using separate lightweight `SimplicateClient` instances;
-- normalize the result once;
-- persist the normalized context per week under shared Clerk state;
-- reuse that cache for 30 minutes across Streamlit/container restarts.
-
-The uncached path is now bounded approximately by the slowest Simplicate request rather than four sequential requests. Warm page loads use local cache.
+Projects, services, hour types and booking assignments are fetched concurrently and normalized review context is cached per week for 30 minutes in shared state.
 
 ## 0.6.3 ignored-entry normalization
 
@@ -148,7 +157,7 @@ A safe rebuild uses the same sequence with `rebuild=true` only after explicit us
 
 HERMES owns interpretation, mapping choice, autonomy tier and rationale.
 
-Python owns plan identity, revisioning, week boundaries, Clockify source truth, durations, ignored/unknown policy enforcement, removed-source reconciliation, daily scheduling, merge behaviour, coverage/schema validation, persistence and active-plan switching.
+Python owns plan identity, revisioning, week boundaries, Clockify source truth, durations, ignored/unknown policy enforcement, removed-source reconciliation, daily scheduling, reviewed-entry consolidation, merge behaviour, coverage/schema validation, persistence and active-plan switching.
 
 HERMES must never use terminal, `execute_code`, filesystem manipulation or generic file tools to repair Clerk state.
 
@@ -171,10 +180,6 @@ STARTING → RUNNING → SUCCEEDED
 
 A vanished runner becomes `FAILED` instead of remaining indefinitely `RUNNING`.
 
-## Runtime SKILL migration
-
-The runtime SKILL lives in shared state and survives Git updates. The 0.6.4 guard requires decisions-only prepare/apply, immutable rebuild flags, target-free ignored decisions, unknown→ASK semantics and Python-owned daily scheduling.
-
 ## Update lifecycle
 
 During recovery/development the deterministic fallback remains:
@@ -190,23 +195,7 @@ docker restart hermes-agent timesheet-clerk-ui
 
 ## Test protection
 
-Regression coverage includes:
-
-- decisions-only plan creation;
-- changed Clockify text;
-- human review preservation;
-- safe rebuild;
-- orphan-source removal;
-- partial aggregate loss;
-- current-week detection;
-- ignored decisions without booking targets;
-- canonical 09:00 scheduling;
-- non-billable-before-billable ordering;
-- reflow after duration changes;
-- safe restore to ASK/PENDING;
-- unclassified-source ignore guard;
-- strict Task/service → Hour type scoping with no global fallback;
-- supervised planner jobs and dead-runner detection.
+Regression coverage includes decisions-only plan creation, source-change handling, human review preservation, safe rebuild, source reconciliation, current-week detection, ignored normalization, 09:00 scheduling, non-billable ordering, restore safety, unknown-source guarding, service-scoped hour types, reviewed-entry consolidation, human duration formatting, supervised planner jobs and dead-runner detection.
 
 ## Remaining write milestone
 
