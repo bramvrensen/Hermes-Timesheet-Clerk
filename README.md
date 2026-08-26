@@ -2,7 +2,7 @@
 
 Human-in-the-loop timesheet planning and booking for HERMES Agent.
 
-> Status: **0.6.5 deterministic planner.** Clockify/Simplicate reads, decisions-only mapping orchestration, source reconciliation, review UI, deterministic day scheduling, service-scoped hour type selection, feedback, approvals, safe week rebuilds and current-week generation are available. Simplicate writes remain deliberately disabled until the booking path is validated.
+> Status: **0.6.6 deterministic planner.** Clockify/Simplicate reads, decisions-only mapping orchestration, source reconciliation, review UI, deterministic day scheduling, reviewed-entry consolidation, human duration display, service-scoped hour type selection, feedback, approvals, safe week rebuilds and current-week generation are available. Simplicate writes remain deliberately disabled until the booking path is validated.
 
 See [`docs/DESIGN.md`](docs/DESIGN.md), [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md) and [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md).
 
@@ -25,23 +25,27 @@ timesheet_mapping_apply
 validated + scheduled plan revision
 ```
 
+## 0.6.6 reviewed consolidation and human time display
+
+Human review can now consolidate adjacent entries after a correction/restore workflow. Consolidation is deliberately conservative: both rows must be non-ignored, resolved, human-confirmed/corrected, contiguous in planned time, have the exact same booking target and billable state, and represent the same Clockify work context/description. Matching rows are merged into one visible booking block while all underlying `clockify_source_ids` and snapshots remain available for coverage and later splitting.
+
+Example: two reviewed Cyclovriend `Reistijd` rows of one hour each, mapped to the same Simplicate travel code, become one `09:00–11:00` block of `2u`.
+
+Duration presentation no longer uses decimal-hour notation. Review cards, day summaries and week metrics use human labels such as `15 min`, `30 min`, `1u`, `1u 30 min` and `2u`. Clockify source durations use the same presentation.
+
 ## 0.6.5 service-scoped hour types
 
-Direct-mapping review now treats the Simplicate Task / service as the parent of the Hour type choice.
+Direct-mapping review treats the Simplicate Task / service as the parent of the Hour type choice.
 
 - selecting a Task / service filters the Hour type dropdown to rows whose `service_id` exactly matches the selected service;
 - global/unscoped hour types are never offered as a fallback;
 - duplicate hour types are removed by ID;
 - the configured preferred hour type is only prioritized inside the valid scoped set;
-- if Simplicate exposes no valid hour types for the selected service, the UI shows a warning and the mapping remains incomplete, so it cannot be resolved/saved as a complete direct mapping.
-
-This prevents review from creating project/service/hour-type combinations that Simplicate may reject later during booking.
+- if Simplicate exposes no valid hour types for the selected service, the UI shows a warning and the mapping remains incomplete.
 
 ## 0.6.4 review and scheduling
 
-0.6.4 centralizes the daily booking timeline in one Python scheduler.
-
-For every day:
+The daily booking timeline is deterministic:
 
 - ignored rows remain source-covered but do not participate in the booking timeline;
 - non-billable/internal entries are scheduled before billable entries;
@@ -49,29 +53,11 @@ For every day:
 - following entries are contiguous using `planned_duration_seconds`;
 - the same reflow runs after CREATE/REFRESH and human review changes such as duration, skip, restore and mapping edits.
 
-Clockify timestamps remain immutable source evidence. Planned start/end timestamps are separate booking state.
+Restore is fail-safe: restoring an ignored entry without a complete target reopens it as `ASK/PENDING` rather than fabricating a resolved mapping.
 
-Restore is fail-safe. Restoring an ignored entry without a complete target reopens it as `ASK/PENDING`; it can no longer become an invalid resolved AUTO entry with an empty mapping.
+Unclassified time is never silently discarded. Blank descriptions and recognized placeholders such as `?`, `??`, `?? -- ??`, `unknown` and `onbekend` are forced back to non-ignored `ASK` state.
 
-The Streamlit duration +/- controls use callbacks so they no longer mutate a widget key after the number input has been instantiated.
-
-### Unknown is not ignored
-
-Unclassified time is never silently discarded. Blank descriptions and recognized placeholders such as `?`, `??`, `?? -- ??`, `unknown` and `onbekend` are forced back to non-ignored `ASK` state even if HERMES incorrectly proposes `ignored=true`.
-
-Ignored is reserved for positively identified exclusions such as configured lunch/travel rules.
-
-### UI loading performance
-
-Simplicate review context previously loaded projects, services, hour types and booking assignments sequentially, making cold frontend loads roughly the sum of four API latencies.
-
-0.6.4:
-
-- fetches those independent Simplicate datasets concurrently;
-- stores normalized review context in a persistent per-week Clerk cache for 30 minutes;
-- keeps that cache across Streamlit/container restarts.
-
-The first uncached load is therefore bounded roughly by the slowest Simplicate call instead of all four calls added together. Warm loads use local state/cache.
+Simplicate review context is fetched concurrently and cached per week for 30 minutes in shared Clerk state, substantially reducing frontend load time.
 
 ## 0.6.3 ignored entries
 
