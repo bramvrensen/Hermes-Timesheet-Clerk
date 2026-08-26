@@ -1,10 +1,12 @@
 """HERMES plugin entrypoint for Timesheet Clerk 0.5.14.
 
-0.5.14 keeps the existing workflow and adds deterministic Clockify source hydration
-before plan create/sync so planner payloads cannot drop source titles or durations.
+0.5.14 keeps the existing workflow, adds deterministic Clockify source hydration
+before plan create/sync, and keeps the separate Streamlit frontend in lockstep
+with plugin updates.
 """
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from . import plugin_legacy as _legacy
@@ -59,18 +61,47 @@ def handle_plan_sync(params: dict[str, Any], **kwargs: Any) -> str:
     return _legacy._safe(run)
 
 
+def handle_update(params: dict[str, Any], **kwargs: Any) -> str:
+    """Run the normal update and restart Streamlit when the pull/tests succeeded."""
+    response = _legacy.handle_update(params, **kwargs)
+    try:
+        payload = json.loads(response)
+    except json.JSONDecodeError:
+        return response
+    if not payload.get("success"):
+        return response
+
+    try:
+        repo = PlanRepository()
+        marker = repo.root / "frontend-restart.request"
+        marker.write_text("restart\n", encoding="utf-8")
+        data = payload.get("data")
+        if isinstance(data, dict):
+            data["frontend_restart_requested"] = True
+        return json.dumps(payload, ensure_ascii=False, default=str)
+    except OSError as exc:
+        data = payload.get("data")
+        if isinstance(data, dict):
+            data["frontend_restart_requested"] = False
+            data["frontend_restart_warning"] = str(exc)
+        return json.dumps(payload, ensure_ascii=False, default=str)
+
+
 def register(ctx) -> None:
-    # plugin_legacy.register resolves these handler globals at call time. Swap only
-    # create/sync so all other 0.5.13 behavior remains untouched.
+    # plugin_legacy.register resolves handler globals at call time. Swap only
+    # the 0.5.14 overrides, leaving all other behavior unchanged.
     original_create = _legacy.handle_plan_create
     original_sync = _legacy.handle_plan_sync
+    original_update = _legacy.handle_update
     _legacy.handle_plan_create = handle_plan_create
     _legacy.handle_plan_sync = handle_plan_sync
+    _legacy.handle_update = handle_update
     try:
         _legacy.register(ctx)
     finally:
         _legacy.handle_plan_create = original_create
         _legacy.handle_plan_sync = original_sync
+        _legacy.handle_update = original_update
 
     ctx.register_tool(
         name="timesheet_plan_fresh_start",
