@@ -2,13 +2,13 @@
 
 Human-in-the-loop timesheet planning and booking for HERMES Agent.
 
-> Status: **0.6.0 architecture cleanup.** Clockify/Simplicate reads, deterministic source comparison, mapping-decision orchestration, review UI, feedback, approvals and safe week rebuilds are available. Simplicate writes remain deliberately disabled until the booking path is validated.
+> Status: **0.6.1 deterministic planner.** Clockify/Simplicate reads, mapping-decision orchestration, source reconciliation, review UI, feedback, approvals and safe week rebuilds are available. Simplicate writes remain deliberately disabled until the booking path is validated.
 
 See [`docs/DESIGN.md`](docs/DESIGN.md), [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md) and [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md).
 
-## 0.6.0 architecture
+## Architecture
 
-0.6 removes LLM-authored booking-plan payloads. HERMES receives an exact list of Clockify work items and returns mapping decisions only. Python owns plan IDs, week metadata, Clockify source truth, durations, coverage, revisioning, merge behaviour, human-review preservation and persistence.
+0.6 removed LLM-authored booking-plan payloads. HERMES receives an exact list of Clockify work items and returns mapping decisions only. Python owns plan IDs, week metadata, Clockify source truth, durations, coverage, revisioning, merge behaviour, human-review preservation and persistence.
 
 ```text
 Clockify + existing Clerk state
@@ -27,7 +27,18 @@ validated complete plan revision
 
 The planner no longer receives tools that can create/sync arbitrary plan JSON, rebaseline state or destructively reset a week.
 
-## Safety changes in 0.6
+## 0.6.1 source reconciliation
+
+0.6.1 fixes legacy/orphan source references that can exist in a working plan even when the historic Clockify snapshot baseline no longer contains them.
+
+Removed Clockify detection is now based on live Clockify IDs versus actual plan coverage, not snapshot history alone.
+
+- A one-source plan row whose Clockify source disappeared is removed deterministically during normal refresh.
+- A legacy consolidated row whose complete source bundle disappeared is removed deterministically.
+- If only part of a legacy consolidated bundle disappeared, Timesheet Clerk returns `requires_explicit_rebuild` instead of guessing how the historic aggregate should be split.
+- A normal refresh may never automatically retry as a rebuild. `rebuild=false` stays false for the entire planner run; rebuild requires an explicit user action/request.
+
+## Safety
 
 - `timesheet_plan_create`, `timesheet_plan_sync`, `timesheet_source_rebaseline` and `timesheet_plan_fresh_start` are removed from the HERMES tool surface.
 - Legacy destructive `fresh_start_week()` is disabled in code.
@@ -35,7 +46,7 @@ The planner no longer receives tools that can create/sync arbitrary plan JSON, r
 - Failed rebuilds leave existing plan state untouched.
 - Missing `active_plan.json` is repaired from the stored plan catalog instead of being interpreted as an empty repository.
 - Background planner jobs persist `STARTING/RUNNING/SUCCEEDED/FAILED` state and an exit code. A vanished runner becomes `FAILED`, never an eternal `RUNNING` state.
-- Runtime `SKILL.md` is migrated with a mandatory 0.6 guard because the live skill intentionally lives outside Git.
+- Runtime `SKILL.md` is migrated with a mandatory versioned guard because the live skill intentionally lives outside Git.
 - CI runs compile + pytest on every push to `main` as well as pull requests.
 
 ## Shared state
@@ -76,9 +87,11 @@ Changed Clockify source facts are re-fetched by the plugin at apply time. The LL
 
 Human-reviewed booking fields remain authoritative during incremental refreshes.
 
+Removed sources need no mapping decision. They are reconciled deterministically by Python when safe to do so.
+
 ## Safe rebuild
 
-A rebuild uses the same two tools with `rebuild=true`. The old plan is not deleted first. The plugin builds a complete replacement, validates Clockify coverage and the plan contract, writes the new plan, activates it and then best-effort marks the old working plan `SUPERSEDED`.
+A rebuild uses the same two tools with `rebuild=true`, but only after explicit user intent. The old plan is not deleted first. The plugin builds a complete replacement, validates Clockify coverage and the plan contract, writes the new plan, activates it and then best-effort marks the old working plan `SUPERSEDED`.
 
 A tool failure before successful creation leaves the old plan available.
 
@@ -93,6 +106,8 @@ Planner status is shown in the frontend as a real job state rather than inferred
 ## Source integrity
 
 A normalized Clockify row is source truth. Source comparison tracks ID, description, client, project, tags, start/end timestamps and duration. Simplicate mapping, planned duration, ignore/review state and booking state do not redefine the source.
+
+Actual plan coverage is also checked against the live Clockify week. This protects reconciliation when historic source snapshots are incomplete or stale.
 
 ## Updating
 
