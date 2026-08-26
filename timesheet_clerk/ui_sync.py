@@ -40,8 +40,9 @@ def _upgrade_sync_prompt(prompt: str) -> str:
     return prompt
 
 
-def launch_sync(*, root: Path, profile: str, prompt: str) -> dict[str, Any]:
-    prompt = _upgrade_sync_prompt(prompt)
+def launch_sync(*, root: Path, profile: str, prompt: str, apply_refresh_contract: bool = True) -> dict[str, Any]:
+    if apply_refresh_contract:
+        prompt = _upgrade_sync_prompt(prompt)
     log_dir = root / "logs"; log_dir.mkdir(parents=True, exist_ok=True)
     handle = (log_dir / "planner-refresh.log").open("ab")
     child = subprocess.Popen(
