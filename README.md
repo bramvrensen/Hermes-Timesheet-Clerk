@@ -2,7 +2,7 @@
 
 Human-in-the-loop timesheet planning and booking for HERMES Agent.
 
-> Status: **0.6.1 deterministic planner.** Clockify/Simplicate reads, mapping-decision orchestration, source reconciliation, review UI, feedback, approvals and safe week rebuilds are available. Simplicate writes remain deliberately disabled until the booking path is validated.
+> Status: **0.6.2 deterministic planner.** Clockify/Simplicate reads, mapping-decision orchestration, source reconciliation, review UI, feedback, approvals, safe week rebuilds and explicit current-week generation are available. Simplicate writes remain deliberately disabled until the booking path is validated.
 
 See [`docs/DESIGN.md`](docs/DESIGN.md), [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md) and [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md).
 
@@ -27,11 +27,21 @@ validated complete plan revision
 
 The planner no longer receives tools that can create/sync arbitrary plan JSON, rebaseline state or destructively reset a week.
 
+## 0.6.2 current-week generation
+
+0.6.2 separates **the plan currently open in the frontend** from **whether the current calendar week already has a working plan**.
+
+A historical week may remain active for review without hiding the action to create the current week. If, for example, week 34 is open while week 35 does not yet exist, the Review tab shows `Generate current week` for week 35.
+
+Current-week creation uses `rebuild=false`. Because no working plan exists for that exact week, the deterministic core treats the run as CREATE. Historical plans remain untouched.
+
+The frontend checks the plan catalog for the exact Monday/Sunday rather than relying on the global active pointer.
+
 ## 0.6.1 source reconciliation
 
 0.6.1 fixes legacy/orphan source references that can exist in a working plan even when the historic Clockify snapshot baseline no longer contains them.
 
-Removed Clockify detection is now based on live Clockify IDs versus actual plan coverage, not snapshot history alone.
+Removed Clockify detection is based on live Clockify IDs versus actual plan coverage, not snapshot history alone.
 
 - A one-source plan row whose Clockify source disappeared is removed deterministically during normal refresh.
 - A legacy consolidated row whose complete source bundle disappeared is removed deterministically.
@@ -100,6 +110,8 @@ A tool failure before successful creation leaves the old plan available.
 The Streamlit frontend provides week/day views, modal review/editing, skip/restore, duration reflow, assignment/direct mapping overrides, configuration, runtime SKILL editing, state inspection, approvals and booking preparation.
 
 If the active pointer is missing but stored plans exist, the UI repairs the pointer and opens the newest stored plan. Configuration, SKILL and State remain accessible even when no plan exists.
+
+If the current calendar week has no working plan, `Generate current week` remains available even while an older week is open.
 
 Planner status is shown in the frontend as a real job state rather than inferred only from a PID.
 
