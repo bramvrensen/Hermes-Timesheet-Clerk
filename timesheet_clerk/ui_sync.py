@@ -17,15 +17,18 @@ from typing import Any
 def _upgrade_sync_prompt(prompt: str) -> str:
     """Keep frontend refresh prompts aligned with the complete sync workflow."""
     prompt += (
-        " IMPORTANT REFRESH CONTRACT: if timesheet_sync_probe reports source_delta.unprocessed_count > 0, "
-        "first call timesheet_source_rebaseline for the same interval to deterministically restore plan coverage. "
-        "Do NOT stop after coverage repair. Then call timesheet_plan_active and map ONLY entries that were created by "
-        "that repair and remain unresolved ASK entries; preserve all previously reviewed/mapped entries unchanged. "
-        "For those repaired ASK entries, load timesheet_config_get, timesheet_learning_context and only the Simplicate "
-        "assignment/context data needed to apply the same AUTO/PROPOSE/ASK mapping policy used for initial plan generation. "
-        "After mapping those repaired entries, call timesheet_plan_sync with the complete active plan, preserving canonical "
-        "Clockify source IDs/snapshots and every existing human review value. Never book hours to Simplicate during refresh. "
-        "If no repaired ASK entries require mapping, stop with the deterministic summary."
+        " IMPORTANT REFRESH CONTRACT: call timesheet_sync_probe first. If source_delta.unprocessed_count > 0, "
+        "call timesheet_source_rebaseline for the same interval to restore plan coverage, then continue. "
+        "Call timesheet_plan_active and select mapping targets deterministically: entries with mapping_state='PENDING' OR, "
+        "for backward compatibility with pre-0.5.12 plans, ASK entries whose why_not_auto is exactly "
+        "'Clockify source ingested; Simplicate mapping still requires resolution.'. "
+        "Map ONLY those pending entries; preserve every other existing entry unchanged. Load timesheet_config_get, "
+        "timesheet_learning_context and only the Simplicate context needed for those entries, then apply the same "
+        "AUTO/PROPOSE/ASK policy used for initial generation. After each target has been evaluated, set mapping_state='RESOLVED' "
+        "even when the resulting tier remains ASK; replace the ingestion sentinel in why_not_auto with the actual mapping reason. "
+        "Persist through timesheet_plan_sync using the complete active plan. Never book hours to Simplicate during refresh. "
+        "IMPORTANT: pending mapping is independent from source_delta.has_changes. If the probe is a source no-op but the active "
+        "plan still contains PENDING or legacy-ingestion-sentinel entries, map those entries before stopping."
     )
     return prompt
 
