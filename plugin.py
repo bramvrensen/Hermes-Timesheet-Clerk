@@ -6,7 +6,6 @@ with plugin updates.
 """
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from . import plugin_legacy as _legacy
@@ -16,6 +15,7 @@ from .timesheet_clerk.config import ClockifyConfig
 from .timesheet_clerk.fresh_start import fresh_start_week
 from .timesheet_clerk.source_hydration import assert_live_week_coverage, hydrate_plan_sources
 from .timesheet_clerk.storage import PlanRepository
+from .timesheet_clerk.update_lifecycle import build_update_handler
 
 
 def handle_plan_fresh_start(params: dict[str, Any], **kwargs: Any) -> str:
@@ -61,30 +61,9 @@ def handle_plan_sync(params: dict[str, Any], **kwargs: Any) -> str:
     return _legacy._safe(run)
 
 
-def handle_update(params: dict[str, Any], **kwargs: Any) -> str:
-    """Run the normal update and restart Streamlit when the pull/tests succeeded."""
-    response = _legacy.handle_update(params, **kwargs)
-    try:
-        payload = json.loads(response)
-    except json.JSONDecodeError:
-        return response
-    if not payload.get("success"):
-        return response
-
-    try:
-        repo = PlanRepository()
-        marker = repo.root / "frontend-restart.request"
-        marker.write_text("restart\n", encoding="utf-8")
-        data = payload.get("data")
-        if isinstance(data, dict):
-            data["frontend_restart_requested"] = True
-        return json.dumps(payload, ensure_ascii=False, default=str)
-    except OSError as exc:
-        data = payload.get("data")
-        if isinstance(data, dict):
-            data["frontend_restart_requested"] = False
-            data["frontend_restart_warning"] = str(exc)
-        return json.dumps(payload, ensure_ascii=False, default=str)
+# The manifest on disk is authoritative for version reporting. This lifecycle
+# also requests the managed Streamlit child to restart after a real update.
+handle_update = build_update_handler(_legacy)
 
 
 def register(ctx) -> None:
