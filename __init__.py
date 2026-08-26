@@ -1,14 +1,14 @@
-"""Native Hermes directory-plugin entry point.
-
-Hermes directory plugins are discovered through a root __init__.py containing
-register(ctx). The implementation lives in plugin.py; update lifecycle policy is
-bound separately so it can evolve without duplicating the full plugin module.
-"""
+"""Native Hermes directory-plugin entry point for Timesheet Clerk 0.6."""
 
 from . import plugin as _plugin
-from .timesheet_clerk.update_lifecycle import build_update_handler
+from .timesheet_clerk.runtime_v06 import ensure_v06_runtime_guard
 
-_plugin.handle_update = build_update_handler(_plugin)
-register = _plugin.register
+
+def register(ctx):
+    # Runtime SKILL state lives outside Git. Migrate its mandatory planner contract
+    # before Hermes registers the skill/tools for this process.
+    ensure_v06_runtime_guard(_plugin.DEFAULT_TIMESHEET_SKILL)
+    return _plugin.register(ctx)
+
 
 __all__ = ["register"]
