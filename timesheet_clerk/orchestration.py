@@ -1,9 +1,7 @@
-"""Deterministic 0.6 planner orchestration.
+"""Deterministic Timesheet Clerk planner orchestration.
 
-The LLM is allowed to decide mappings only. Clockify source fidelity, plan identity,
-week metadata, revisioning, coverage, merge behaviour and persistence are owned by
-Python. This module is deliberately independent from Hermes tool registration so it
-can be exercised directly in tests.
+HERMES decides mappings only. Python owns source fidelity, plan identity, week
+metadata, coverage, revisioning, merge behaviour and persistence.
 """
 from __future__ import annotations
 
@@ -19,32 +17,22 @@ from .coverage import is_pending_mapping
 from .review import source_fingerprint
 from .runtime import read_config
 from .storage import PlanNotFound, PlanRepository, StateConflict
-from .sync import attach_source_snapshots, plan_summary, source_delta
+from .sync import attach_source_snapshots, covered_source_ids, plan_summary, source_delta
 
 _REVIEW_FIELDS = (
-    "planned_duration_seconds",
-    "planned_start",
-    "planned_end",
-    "booking_mode",
-    "assignment",
-    "direct_mapping",
-    "ignored",
-    "review_state",
+    "planned_duration_seconds", "planned_start", "planned_end", "booking_mode",
+    "assignment", "direct_mapping", "ignored", "review_state",
 )
 
 
 def find_working_week(repo: PlanRepository, monday: str, sunday: str) -> dict[str, Any] | None:
-    """Return the authoritative mutable plan for an exact week.
-
-    Prefer the active pointer when it already points at the requested week. This
-    avoids ambiguity when a safe rebuild leaves an older plan in the catalog.
-    """
+    """Return the newest mutable plan for an exact week, preferring active state."""
     try:
         active = repo.get_active()
-        active_week = active.get("week") or {}
+        week = active.get("week") or {}
         if (
-            str(active_week.get("monday") or "") == monday
-            and str(active_week.get("sunday") or "") == sunday
+            str(week.get("monday") or "") == monday
+            and str(week.get("sunday") or "") == sunday
             and active.get("status") in {"DRAFT", "IN_REVIEW"}
         ):
             return active
@@ -64,7 +52,10 @@ def find_working_week(repo: PlanRepository, monday: str, sunday: str) -> dict[st
             matches.append(plan)
     if not matches:
         return None
-    matches.sort(key=lambda p: (str(p.get("updated_at") or p.get("generated_at") or ""), int(p.get("revision") or 0)))
+    matches.sort(key=lambda p: (
+        str(p.get("updated_at") or p.get("generated_at") or ""),
+        int(p.get("revision") or 0),
+    ))
     return matches[-1]
 
 
@@ -76,21 +67,20 @@ def prepare_mapping_work(
     sunday: str,
     rebuild: bool = False,
 ) -> dict[str, Any]:
-    """Build the exact mapping worklist. No LLM-authored plan payload is involved."""
+    """Return exact mapping work plus deterministic source reconciliation."""
     _validate_week(monday, sunday)
     existing = find_working_week(repo, monday, sunday)
     by_id = {str(row.get("id")): row for row in clockify_entries if row.get("id")}
+    live_ids = set(by_id)
 
     if rebuild or existing is None:
-        required_ids = set(by_id)
+        required_ids = set(live_ids)
         delta = source_delta(None, clockify_entries)
+        removed_ids: set[str] = set()
         mode = "REBUILD" if existing is not None else "CREATE"
     else:
         delta = source_delta(existing, clockify_entries)
-        # Legacy plans without immutable source snapshots need a deterministic
-        # baseline write, not a wholesale remap. Only genuinely unresolved legacy
-        # entries still become mapping work.
-        required_ids = set()
+        required_ids: set[str] = set()
         if not delta.get("requires_rebaseline"):
             required_ids.update(
                 str(row.get("id"))
@@ -100,11 +90,21 @@ def prepare_mapping_work(
             )
         for entry in existing.get("entries") or []:
             if is_pending_mapping(entry):
-                required_ids.update(str(v) for v in entry.get("clockify_source_ids") or [] if str(v) in by_id)
+                required_ids.update(
+                    str(value)
+                    for value in entry.get("clockify_source_ids") or []
+                    if str(value) in live_ids
+                )
+
+        # 0.6.1 invariant: persisted plan coverage is authoritative when detecting
+        # deleted Clockify sources. Historical snapshot baselines can be incomplete
+        # after legacy bugs/rebaseline operations, so source_delta alone is not enough.
+        removed_ids = covered_source_ids(existing) - live_ids
+        removed_ids.update(str(value) for value in delta.get("missing_source_ids") or [])
         mode = "REFRESH"
 
     prior_by_source = _entry_by_source(existing)
-    work_items = []
+    work_items: list[dict[str, Any]] = []
     for source_id in sorted(required_ids, key=lambda sid: str((by_id.get(sid) or {}).get("start") or sid)):
         source = by_id[source_id]
         prior = prior_by_source.get(source_id)
@@ -116,6 +116,16 @@ def prepare_mapping_work(
         })
 
     requires_baseline = bool(existing is not None and delta.get("requires_rebaseline"))
+    removed = sorted(removed_ids)
+    source_delta_summary = {
+        key: delta.get(key)
+        for key in ("has_changes", "requires_rebaseline", "new_count", "changed_count", "missing_count", "unprocessed_count", "unchanged_count")
+    }
+    source_delta_summary["missing_count"] = len(removed)
+    source_delta_summary["has_changes"] = bool(
+        source_delta_summary.get("has_changes") or removed
+    )
+
     return {
         "mode": mode,
         "week": {"monday": monday, "sunday": sunday},
@@ -123,14 +133,11 @@ def prepare_mapping_work(
         "base_revision": existing.get("revision") if existing else None,
         "work_count": len(work_items),
         "work_items": work_items,
-        "missing_source_ids": list(delta.get("missing_source_ids") or []),
+        "missing_source_ids": removed,
         "requires_baseline_write": requires_baseline,
-        "source_delta": {
-            key: delta.get(key)
-            for key in ("has_changes", "requires_rebaseline", "new_count", "changed_count", "missing_count", "unprocessed_count", "unchanged_count")
-        },
-        "no_op": mode == "REFRESH" and not work_items and not delta.get("missing_source_ids") and not requires_baseline,
-        "summary": plan_summary(existing, source_delta=delta) if existing else None,
+        "source_delta": source_delta_summary,
+        "no_op": mode == "REFRESH" and not work_items and not removed and not requires_baseline,
+        "summary": plan_summary(existing, source_delta={**delta, "missing_count": len(removed)}) if existing else None,
     }
 
 
@@ -143,8 +150,10 @@ def apply_mapping_decisions(
     decisions: list[dict[str, Any]],
     rebuild: bool = False,
 ) -> dict[str, Any]:
-    """Apply mapping decisions and persist one complete, validated plan revision."""
-    work = prepare_mapping_work(repo, clockify_entries, monday=monday, sunday=sunday, rebuild=rebuild)
+    """Apply decisions and commit exactly one complete validated plan state."""
+    work = prepare_mapping_work(
+        repo, clockify_entries, monday=monday, sunday=sunday, rebuild=rebuild
+    )
     required_ids = {str(row["source_id"]) for row in work["work_items"]}
     decision_by_id: dict[str, dict[str, Any]] = {}
     for raw in decisions or []:
@@ -154,16 +163,16 @@ def apply_mapping_decisions(
             raise ContractError(f"duplicate mapping decision for Clockify source {source_id}")
         decision_by_id[source_id] = decision
 
-    supplied_ids = set(decision_by_id)
-    missing = sorted(required_ids - supplied_ids)
-    extra = sorted(supplied_ids - required_ids)
-    if missing:
-        raise StateConflict("mapping decisions omitted required Clockify source(s): " + ", ".join(missing))
-    if extra:
-        raise StateConflict("mapping decisions included source(s) that are not pending work: " + ", ".join(extra))
+    missing_decisions = sorted(required_ids - set(decision_by_id))
+    extra_decisions = sorted(set(decision_by_id) - required_ids)
+    if missing_decisions:
+        raise StateConflict("mapping decisions omitted required Clockify source(s): " + ", ".join(missing_decisions))
+    if extra_decisions:
+        raise StateConflict("mapping decisions included source(s) that are not pending work: " + ", ".join(extra_decisions))
 
     by_id = {str(row.get("id")): row for row in clockify_entries if row.get("id")}
     existing = find_working_week(repo, monday, sunday)
+
     if rebuild or existing is None:
         candidate = _build_new_plan(existing, by_id, decision_by_id, monday=monday, sunday=sunday)
         saved = repo.create(validate_plan(candidate), make_active=True)
@@ -175,28 +184,33 @@ def apply_mapping_decisions(
                 repo.save_revision(old, expected_revision=int(existing["revision"]), make_active=False)
                 superseded_plan_id = existing["plan_id"]
             except (StateConflict, OSError):
-                # Replacement is already safely active. Failing to annotate the
-                # old plan must never roll back or misreport a successful rebuild.
-                superseded_plan_id = None
-        return {"plan": saved, "summary": plan_summary(saved), "mode": work["mode"], "superseded_plan_id": superseded_plan_id}
+                pass
+        return {
+            "plan": saved,
+            "summary": plan_summary(saved),
+            "mode": work["mode"],
+            "superseded_plan_id": superseded_plan_id,
+        }
 
     candidate = deepcopy(existing)
     candidate["status"] = "IN_REVIEW"
     candidate["source_sync_at"] = utc_now()
-
-    missing_source_ids = set(str(v) for v in work.get("missing_source_ids") or [])
-    new_entries: list[dict[str, Any]] = []
+    removed_ids = set(str(value) for value in work.get("missing_source_ids") or [])
     prior_by_source = _entry_by_source(existing)
+    new_entries: list[dict[str, Any]] = []
 
     for entry in existing.get("entries") or []:
-        source_ids = [str(v) for v in entry.get("clockify_source_ids") or []]
-        if any(source_id in missing_source_ids for source_id in source_ids):
-            # 0.6 generated rows are one-source rows. Refuse to guess how to mutate
-            # a legacy aggregate when only part of its source bundle disappeared.
-            if len(source_ids) > 1 and not all(source_id in missing_source_ids for source_id in source_ids):
+        source_ids = [str(value) for value in entry.get("clockify_source_ids") or [] if value]
+        removed_for_entry = [source_id for source_id in source_ids if source_id in removed_ids]
+        if removed_for_entry:
+            if len(source_ids) > 1 and len(removed_for_entry) != len(source_ids):
                 raise StateConflict(
-                    f"legacy consolidated entry {entry.get('entry_id')} lost only part of its Clockify sources; rebuild the week"
+                    "requires_explicit_rebuild: legacy consolidated entry "
+                    f"{entry.get('entry_id')} lost only part of its Clockify sources. "
+                    "Do not retry with rebuild=true automatically; an explicit user rebuild is required."
                 )
+            # Single-source row, or a legacy aggregate whose entire source bundle
+            # disappeared: remove it deterministically from the working plan.
             continue
         if any(source_id in decision_by_id for source_id in source_ids):
             continue
@@ -206,16 +220,17 @@ def apply_mapping_decisions(
         source = by_id.get(source_id)
         if source is None:
             raise StateConflict(f"Clockify source {source_id} disappeared before decisions were applied")
-        prior = prior_by_source.get(source_id)
-        row = _entry_from_decision(source, decision, prior=prior)
-        new_entries.append(row)
+        new_entries.append(_entry_from_decision(source, decision, prior=prior_by_source.get(source_id)))
 
-    new_entries.sort(key=lambda row: (str(row.get("date") or ""), str(row.get("planned_start") or ""), str(row.get("entry_id") or "")))
+    new_entries.sort(key=lambda row: (
+        str(row.get("date") or ""), str(row.get("planned_start") or ""), str(row.get("entry_id") or "")
+    ))
     candidate["entries"] = new_entries
     candidate = attach_source_snapshots(candidate, clockify_entries)
     _assert_full_coverage(candidate, clockify_entries)
-    candidate = validate_plan(candidate)
-    saved = repo.save_revision(candidate, expected_revision=int(existing["revision"]), make_active=True)
+    saved = repo.save_revision(
+        validate_plan(candidate), expected_revision=int(existing["revision"]), make_active=True
+    )
     return {"plan": saved, "summary": plan_summary(saved), "mode": work["mode"]}
 
 
@@ -228,17 +243,27 @@ def _build_new_plan(
     sunday: str,
 ) -> dict[str, Any]:
     cfg = read_config()
-    target = float(existing.get("target_hours")) if existing and isinstance(existing.get("target_hours"), (int, float)) else float(cfg["contract_hours_default"])
-    plan_id = f"plan-{monday}-r-{uuid.uuid4().hex[:10]}"
-    plan = new_plan_skeleton(plan_id=plan_id, monday=monday, sunday=sunday, target_hours=target)
+    target = (
+        float(existing["target_hours"])
+        if existing and isinstance(existing.get("target_hours"), (int, float))
+        else float(cfg["contract_hours_default"])
+    )
+    plan = new_plan_skeleton(
+        plan_id=f"plan-{monday}-r-{uuid.uuid4().hex[:10]}",
+        monday=monday,
+        sunday=sunday,
+        target_hours=target,
+    )
     plan["contract_hours_default"] = float(cfg["contract_hours_default"])
-    rows = []
+    rows: list[dict[str, Any]] = []
     for source_id, source in by_id.items():
         decision = decisions.get(source_id)
         if decision is None:
             raise StateConflict(f"rebuild omitted mapping decision for Clockify source {source_id}")
         rows.append(_entry_from_decision(source, decision, prior=None))
-    rows.sort(key=lambda row: (str(row.get("date") or ""), str(row.get("planned_start") or ""), str(row.get("entry_id") or "")))
+    rows.sort(key=lambda row: (
+        str(row.get("date") or ""), str(row.get("planned_start") or ""), str(row.get("entry_id") or "")
+    ))
     plan["entries"] = rows
     plan["source_sync_at"] = utc_now()
     plan = attach_source_snapshots(plan, list(by_id.values()))
@@ -251,8 +276,8 @@ def _entry_from_decision(source: dict[str, Any], decision: dict[str, Any], *, pr
     start = source.get("start")
     end = source.get("end")
     duration = float(source.get("duration_seconds") or 0)
-    prior_source_ids = [str(v) for v in (prior or {}).get("clockify_source_ids") or []]
-    reusable_entry_id = (prior or {}).get("entry_id") if len(prior_source_ids) == 1 else None
+    prior_ids = [str(value) for value in (prior or {}).get("clockify_source_ids") or []]
+    reusable_entry_id = (prior or {}).get("entry_id") if len(prior_ids) == 1 else None
     row: dict[str, Any] = {
         "entry_id": str(reusable_entry_id or f"clockify-{source_id}"),
         "clockify_source_ids": [source_id],
@@ -281,14 +306,14 @@ def _entry_from_decision(source: dict[str, Any], decision: dict[str, Any], *, pr
         row["assignment"] = {}
 
     if prior and prior.get("review_state") in {"confirmed", "corrected", "skipped"}:
-        # A legacy consolidated row can map multiple Clockify sources. Preserve its
-        # reviewed booking target, but never copy aggregate duration/time into each
-        # split source row.
-        fields = _REVIEW_FIELDS if len(prior_source_ids) == 1 else ("booking_mode", "assignment", "direct_mapping", "ignored", "review_state")
+        fields = _REVIEW_FIELDS if len(prior_ids) == 1 else (
+            "booking_mode", "assignment", "direct_mapping", "ignored", "review_state"
+        )
         for field in fields:
             if field in prior:
                 row[field] = deepcopy(prior[field])
         row["review_preserved_on_sync"] = True
+
     row["source_fingerprint"] = source_fingerprint(row)
     row["last_seen_at"] = utc_now()
     return row
@@ -302,17 +327,18 @@ def _validate_decision(raw: dict[str, Any]) -> dict[str, Any]:
     if not source_id:
         raise ContractError("mapping decision.source_id is required")
     result["source_id"] = source_id
+
     tier = str(result.get("tier") or "").upper()
     if tier not in {"AUTO", "PROPOSE", "ASK"}:
         raise ContractError(f"mapping decision {source_id} has invalid tier {tier!r}")
     result["tier"] = tier
+
     mode = str(result.get("booking_mode") or "").lower()
     if mode not in {"assignment", "direct"}:
         raise ContractError(f"mapping decision {source_id} has invalid booking_mode {mode!r}")
     result["booking_mode"] = mode
 
-    ignored = bool(result.get("ignored", False))
-    if not ignored and tier == "AUTO":
+    if not bool(result.get("ignored", False)) and tier == "AUTO":
         if mode == "assignment":
             if not str((result.get("assignment") or {}).get("id") or "").strip():
                 raise ContractError(f"AUTO decision {source_id} requires assignment.id")
@@ -348,11 +374,7 @@ def _mapping_projection(entry: dict[str, Any]) -> dict[str, Any]:
 
 def _assert_full_coverage(plan: dict[str, Any], clockify_entries: list[dict[str, Any]]) -> None:
     live = {str(row.get("id")) for row in clockify_entries if row.get("id")}
-    covered = {
-        str(source_id)
-        for entry in plan.get("entries") or []
-        for source_id in entry.get("clockify_source_ids") or []
-    }
+    covered = covered_source_ids(plan)
     omitted = sorted(live - covered)
     extras = sorted(covered - live)
     if omitted:
