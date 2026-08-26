@@ -16,6 +16,7 @@ from timesheet_clerk.ui_booking import render_booking
 from timesheet_clerk.ui_choices import hour_types_for_service
 from timesheet_clerk.ui_planner import start_planner
 from timesheet_clerk.ui_sync import clear_sync_status, sync_status
+from timesheet_clerk.ui_time import install_review_time_formatting
 
 
 def _current_week() -> tuple[str, str]:
@@ -72,12 +73,10 @@ def _generate_current_week_action(*, compact: bool = False) -> None:
     monday, sunday = _current_week()
     if has_working_week(review.repo, monday, sunday):
         return
-
     if compact:
         st.info(f"Current week {monday} → {sunday} has no working plan yet.")
     else:
         st.info(f"No working plan exists for the current week. Build {monday} through {sunday} from live sources.")
-
     if st.button("Generate current week", type="primary", use_container_width=True, key=f"generate-current-{monday}"):
         result = start_planner(review.repo.root, monday, sunday, rebuild=False)
         st.success(f"Current-week generation started · run {result['run_id'][:8]}")
@@ -89,50 +88,26 @@ def _bootstrap_current_week() -> None:
 
 
 def _direct_editor_scoped(plan: dict, entry: dict) -> dict:
-    """Direct mapping editor with service-scoped Simplicate hour types only."""
     mapping = deepcopy(entry.get("direct_mapping") or {})
     ctx = plan.get("review_context") or {}
-
-    customer = review._select_row(
-        "Customer",
-        ctx.get("customers") or [],
-        mapping.get("customer_id") or "",
-        f"c-{entry['entry_id']}",
-    )
+    customer = review._select_row("Customer", ctx.get("customers") or [], mapping.get("customer_id") or "", f"c-{entry['entry_id']}")
     customer_id = review._plain_id(customer)
-    projects = [
-        row for row in ctx.get("projects") or []
-        if not customer_id or review._plain_id(row.get("customer_id")) == customer_id
-    ]
-    project = review._select_row(
-        "Project", projects, mapping.get("project_id") or "", f"p-{entry['entry_id']}"
-    )
+    projects = [row for row in ctx.get("projects") or [] if not customer_id or review._plain_id(row.get("customer_id")) == customer_id]
+    project = review._select_row("Project", projects, mapping.get("project_id") or "", f"p-{entry['entry_id']}")
     project_id = review._plain_id(project)
-    services = [
-        row for row in ctx.get("services") or []
-        if not project_id or not row.get("project_id") or review._plain_id(row.get("project_id")) == project_id
-    ]
-    service = review._select_row(
-        "Task / service", services, mapping.get("service_id") or "", f"s-{entry['entry_id']}"
-    )
+    services = [row for row in ctx.get("services") or [] if not project_id or not row.get("project_id") or review._plain_id(row.get("project_id")) == project_id]
+    service = review._select_row("Task / service", services, mapping.get("service_id") or "", f"s-{entry['entry_id']}")
     service_id = review._plain_id(service)
-
     hour_types = hour_types_for_service(ctx, service_id)
     preferred = str(review.read_config().get("preferred_hour_type") or "").casefold()
     if preferred:
-        hour_types.sort(
-            key=lambda row: (0 if review._name(row).casefold() == preferred else 1, review._name(row).casefold())
-        )
-
+        hour_types.sort(key=lambda row: (0 if review._name(row).casefold() == preferred else 1, review._name(row).casefold()))
     current_hour_type = mapping.get("hour_type_id") or ""
     if service_id and not hour_types:
         st.warning("No valid hour types are available for the selected Task / service.")
         hour_type = None
     else:
-        hour_type = review._select_row(
-            "Hour type", hour_types, current_hour_type, f"h-{entry['entry_id']}"
-        )
-
+        hour_type = review._select_row("Hour type", hour_types, current_hour_type, f"h-{entry['entry_id']}")
     return {
         "customer_id": customer_id or None,
         "customer_name": review._name(customer) if customer else None,
@@ -146,17 +121,15 @@ def _direct_editor_scoped(plan: dict, entry: dict) -> dict:
     }
 
 
-# review_app still owns the mature review surface. Replace only hooks that the
-# deterministic 0.6 shell needs to control.
 review._trigger_planner = _trigger_refresh
 review._sync_status_widget = lambda: None
 review._direct_editor = _direct_editor_scoped
+install_review_time_formatting(review)
 ui_admin._fresh_start_active_week = _safe_rebuild_active_week
 
 
 def main() -> None:
     review.require_login()
-
     try:
         ensure_active_plan(review.repo)
         stored = review._select_plan()
@@ -172,7 +145,6 @@ def main() -> None:
         with state_tab:
             review.render_state(review.repo, None, {})
         return
-
     try:
         with st.spinner("Loading Timesheet Clerk…", show_time=True):
             plan = review._with_context(stored)
@@ -180,10 +152,7 @@ def main() -> None:
         st.error(f"Could not load Simplicate review choices: {exc}")
         plan = deepcopy(stored)
         plan["review_context"] = {}
-
-    review_tab, booking_tab, config_tab, skill_tab, state_tab = st.tabs(
-        ["Review", "Booking", "Configuration", "SKILL", "State"]
-    )
+    review_tab, booking_tab, config_tab, skill_tab, state_tab = st.tabs(["Review", "Booking", "Configuration", "SKILL", "State"])
     with review_tab:
         _generate_current_week_action(compact=True)
         review._review_page(stored, plan)
