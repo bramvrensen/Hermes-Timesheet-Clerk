@@ -11,51 +11,29 @@ Prepare a deterministic, reviewable weekly booking plan. Do not book hours while
 ## Tool-only state access
 Timesheet Clerk state is owned by `timesheet_*` tools. Never read, search, infer or edit Clerk plan/config/SKILL state through filesystem, terminal, generic file tools, Drive or guessed paths. Clockify range arguments must use full ISO-8601 timestamps.
 
-## Cheap sync fast path
-For every refresh of an existing week, call `timesheet_sync_probe` first.
+## Refresh workflow
+For every refresh, call `timesheet_sync_probe` first. Source-change detection and pending mapping are separate concerns.
 
-- If `has_changes` is false, stop immediately. Do not load Simplicate context, learning context, Clockify again or the full active plan. Report only the deterministic summary returned by the probe.
-- If `source_delta.requires_rebaseline` is true, call `timesheet_source_rebaseline` for the same interval. This refreshes immutable Clockify snapshots and preserves human review.
-- If `source_delta.unprocessed_count > 0`, first call `timesheet_source_rebaseline` for the same interval. Baseline persistence enforces plan coverage and deterministically creates unresolved ASK entries for every Clockify source not yet represented in the working plan. Then continue in the same refresh: read the active plan and map only those newly repaired ASK entries using the normal mapping workflow below. Preserve all older reviewed/mapped entries unchanged. Persist the enriched plan through `timesheet_plan_sync`.
-- Only repaired/new/changed entries may be remapped during refresh. Existing human-reviewed entries are immutable input to that refresh unless their own Clockify source changed.
-- Missing source IDs must be surfaced and reconciled, never silently deleted.
+- If `source_delta.requires_rebaseline` is true or `source_delta.unprocessed_count > 0`, call `timesheet_source_rebaseline` for the same interval. Coverage repair creates safe unresolved ASK entries and preserves existing human review.
+- After probing/repair, read `timesheet_plan_active` when mapping may still be pending.
+- Mapping targets are exactly: entries with `mapping_state: PENDING`, plus backward-compatible pre-0.5.12 ASK entries whose `why_not_auto` is exactly `Clockify source ingested; Simplicate mapping still requires resolution.`
+- Pending mapping must still be processed even when `timesheet_sync_probe.has_changes` is false. A source no-op does not mean mapping is complete.
+- Map only those targets. Never remap unrelated existing entries.
+- Read config, learning context and only the Simplicate context needed for those targets. Apply the same AUTO/PROPOSE/ASK policy used for initial plan generation.
+- After each target has been evaluated, set `mapping_state: RESOLVED`, even if its final tier remains ASK. Replace the ingestion sentinel with the actual reason why AUTO was not possible.
+- Persist via `timesheet_plan_sync` using the complete active plan. Never book during refresh.
 
 ## Clockify source fidelity
-Every normalized Clockify row is an immutable source bundle. Keep its ID, description, client, project, tags, start, end and duration together.
-
-- Canonical source comparison uses per-Clockify-ID snapshots, independent from booking-plan aggregation.
-- Plan coverage is separate from baseline state. A source can be unchanged in Clockify yet still require coverage repair when it is not represented by any `clockify_source_ids` in the working plan.
-- Never move source facts from one Clockify row to another.
-- Simplicate mapping, review state, ignored state and planned duration may change booking decisions but never mutate the canonical Clockify snapshot.
-- Do not aggregate unrelated source rows merely because descriptions are similar.
-
-## Mapping workflow when source changes exist
-1. Run `timesheet_sync_probe`.
-2. Repair legacy baseline or missing plan coverage first when required.
-3. Read `timesheet_config_get` and `timesheet_plan_active` only when mapping decisions are actually needed.
-4. Read `timesheet_learning_context` only when mapping decisions are required.
-5. Identify only the repaired/new/changed entries that require mapping. Do not remap unrelated existing entries.
-6. Read only the Simplicate planned assignments, booking candidates and booked hours needed for those rows.
-7. Apply the same AUTO, PROPOSE and ASK policy used during initial plan generation. A coverage-repaired entry is ASK only as a safe ingestion default, not evidence that it must remain ASK.
-8. Reconcile booked work.
-9. Prefer valid planned assignments when policy allows.
-10. Fall back to direct customer → project → task/service → hour type when no suitable assignment exists.
-11. Persist mapping changes through `timesheet_plan_sync` using the complete active plan while preserving existing human review state and canonical Clockify source data.
-12. Never book during generation or sync.
-
-## Deterministic summaries
-Use the summary returned by `timesheet_sync_probe`, `timesheet_plan_sync` or `timesheet_plan_summary` for all counts and totals. These values are authoritative. Do not recount ignored entries or recalculate hours in the LLM response.
+Every normalized Clockify row is an immutable source bundle. Keep its ID, description, client, project, tags, start, end and duration together. Canonical source comparison uses per-Clockify-ID snapshots and is independent from booking mapping or human review.
 
 ## Assignment and hour-type policy
-A valid Simplicate assignment is preferred. Planned dated assignments are primary planning evidence; undated booking assignments are override candidates only. Multiple plausible assignments block AUTO.
-
-Direct mapping is hierarchical for customer → project → task/service. Hour Type is different: the review UI must expose the full Simplicate hour-type catalog independently from customer/project/task filters. Prefer the configured `preferred_hour_type` (normally `Senior Consultant`) when it is a valid available option, but never invent it and never hide alternative hour types.
+Prefer valid dated Simplicate assignments when policy allows. Fall back to direct customer → project → task/service → hour type when no suitable assignment exists. Multiple plausible assignments block AUTO. Hour Type is independent from project/task filtering; prefer the configured preferred hour type when valid, but never invent IDs.
 
 ## Autonomy and learning
 Use AUTO, PROPOSE and ASK according to runtime policy and evidence quality. Semantic similarity alone may not yield AUTO unless explicitly enabled. Ambiguity, conflicting evidence or missing masterdata blocks AUTO. Review feedback is evidence, not an immediate global rule; rules must be scoped.
 
 ## Lifecycle, safety and retention
-The open plan is mutable working state. Human review changes create bounded working revisions; planner syncs do not create revision noise. Approved booking input is immutable. Never invent Simplicate IDs, reinterpret tool errors as success, or mark ambiguous reconciliation as BOOKED. Retain approved booking snapshots and receipts according to runtime retention policy; feedback and learned rules remain long-lived learning state.
+The open plan is mutable working state. Human review changes create bounded working revisions; planner syncs do not create revision noise. Approved booking input is immutable. Never invent Simplicate IDs, reinterpret tool errors as success, or mark ambiguous reconciliation as BOOKED.
 
 ## Plugin updates
-When asked to update Timesheet Clerk, use `timesheet_update`. It performs a fast-forward Git pull against the fixed plugin checkout, preserves shared state, ensures planner-profile skill discovery, and schedules Hermes' supervised in-band gateway restart so new Python tool registrations are loaded. Do not use Docker/container restart or the Streamlit frontend as the normal plugin-update path.
+When asked to update Timesheet Clerk, use `timesheet_update`. It performs a fast-forward Git pull, smoke tests and the supervised Hermes gateway restart. Do not use Docker/container restart or the Streamlit frontend as the normal update path.
