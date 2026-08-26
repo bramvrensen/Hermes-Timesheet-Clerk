@@ -109,8 +109,30 @@ def load_review_context(start_date: str, end_date: str) -> dict[str, list[dict[s
         if project.get("customer_id"):
             customers.setdefault(project["customer_id"], {"id": project["customer_id"], "name": project.get("customer_name") or project["customer_id"]})
 
+    # Simplicate project services are the primary source of truth for valid hour
+    # types. GET /projects/service exposes hour_types[] on the service itself.
     scoped: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
+    for service in services:
+        service_id = str(service.get("id") or "")
+        for hour_type in service.get("hour_types") or []:
+            hour_type_id = _plain_id(_nested_id(hour_type) or (hour_type.get("hourtype_id") if isinstance(hour_type, dict) else None))
+            if not service_id or not hour_type_id:
+                continue
+            key = (service_id, hour_type_id)
+            if key in seen:
+                continue
+            seen.add(key)
+            scoped.append({
+                "id": hour_type_id,
+                "name": _nested_name(hour_type) or hour_type_names.get(hour_type_id) or hour_type_id,
+                "service_id": service_id,
+                "billable": hour_type.get("billable") if isinstance(hour_type, dict) else None,
+                "source": "project_service",
+            })
+
+    # Assignment linkage remains useful supporting evidence for tenants/records
+    # where older service payloads omit hour_types, but it is no longer primary.
     for assignment in assignments:
         task = assignment.get("task") or {}
         hour_type = assignment.get("hour_type") or {}
@@ -123,6 +145,8 @@ def load_review_context(start_date: str, end_date: str) -> dict[str, list[dict[s
             continue
         seen.add(key)
         scoped.append({"id": hour_type_id, "name": _nested_name(hour_type) or hour_type_names.get(hour_type_id) or hour_type_id, "service_id": service_id, "source": "assignment"})
+
+    # Last-resort explicit relation from hour-type masterdata, if present.
     for hour_type in hour_types:
         service_id = hour_type.get("service_id")
         if service_id and (service_id, hour_type["id"]) not in seen:
@@ -148,7 +172,14 @@ def _normalize_project(row: dict[str, Any]) -> dict[str, Any]:
 
 def _normalize_service(row: dict[str, Any]) -> dict[str, Any]:
     project = row.get("project") or {}
-    return {"id": _plain_id(row.get("id")), "name": row.get("name") or row.get("title") or row.get("service_name"), "project_id": _plain_id(_nested_id(project) or row.get("project_id")), "use_in_resource_planner": row.get("use_in_resource_planner")}
+    raw_hour_types = row.get("hour_types") or []
+    return {
+        "id": _plain_id(row.get("id")),
+        "name": row.get("name") or row.get("title") or row.get("service_name"),
+        "project_id": _plain_id(_nested_id(project) or row.get("project_id")),
+        "use_in_resource_planner": row.get("use_in_resource_planner"),
+        "hour_types": [dict(item) for item in raw_hour_types if isinstance(item, dict)],
+    }
 
 
 def _normalize_hour_type(row: dict[str, Any]) -> dict[str, Any]:
