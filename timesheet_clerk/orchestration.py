@@ -96,9 +96,6 @@ def prepare_mapping_work(
                     if str(value) in live_ids
                 )
 
-        # 0.6.1 invariant: persisted plan coverage is authoritative when detecting
-        # deleted Clockify sources. Historical snapshot baselines can be incomplete
-        # after legacy bugs/rebaseline operations, so source_delta alone is not enough.
         removed_ids = covered_source_ids(existing) - live_ids
         removed_ids.update(str(value) for value in delta.get("missing_source_ids") or [])
         mode = "REFRESH"
@@ -122,9 +119,7 @@ def prepare_mapping_work(
         for key in ("has_changes", "requires_rebaseline", "new_count", "changed_count", "missing_count", "unprocessed_count", "unchanged_count")
     }
     source_delta_summary["missing_count"] = len(removed)
-    source_delta_summary["has_changes"] = bool(
-        source_delta_summary.get("has_changes") or removed
-    )
+    source_delta_summary["has_changes"] = bool(source_delta_summary.get("has_changes") or removed)
 
     return {
         "mode": mode,
@@ -151,9 +146,7 @@ def apply_mapping_decisions(
     rebuild: bool = False,
 ) -> dict[str, Any]:
     """Apply decisions and commit exactly one complete validated plan state."""
-    work = prepare_mapping_work(
-        repo, clockify_entries, monday=monday, sunday=sunday, rebuild=rebuild
-    )
+    work = prepare_mapping_work(repo, clockify_entries, monday=monday, sunday=sunday, rebuild=rebuild)
     required_ids = {str(row["source_id"]) for row in work["work_items"]}
     decision_by_id: dict[str, dict[str, Any]] = {}
     for raw in decisions or []:
@@ -185,12 +178,7 @@ def apply_mapping_decisions(
                 superseded_plan_id = existing["plan_id"]
             except (StateConflict, OSError):
                 pass
-        return {
-            "plan": saved,
-            "summary": plan_summary(saved),
-            "mode": work["mode"],
-            "superseded_plan_id": superseded_plan_id,
-        }
+        return {"plan": saved, "summary": plan_summary(saved), "mode": work["mode"], "superseded_plan_id": superseded_plan_id}
 
     candidate = deepcopy(existing)
     candidate["status"] = "IN_REVIEW"
@@ -209,8 +197,6 @@ def apply_mapping_decisions(
                     f"{entry.get('entry_id')} lost only part of its Clockify sources. "
                     "Do not retry with rebuild=true automatically; an explicit user rebuild is required."
                 )
-            # Single-source row, or a legacy aggregate whose entire source bundle
-            # disappeared: remove it deterministically from the working plan.
             continue
         if any(source_id in decision_by_id for source_id in source_ids):
             continue
@@ -228,9 +214,7 @@ def apply_mapping_decisions(
     candidate["entries"] = new_entries
     candidate = attach_source_snapshots(candidate, clockify_entries)
     _assert_full_coverage(candidate, clockify_entries)
-    saved = repo.save_revision(
-        validate_plan(candidate), expected_revision=int(existing["revision"]), make_active=True
-    )
+    saved = repo.save_revision(validate_plan(candidate), expected_revision=int(existing["revision"]), make_active=True)
     return {"plan": saved, "summary": plan_summary(saved), "mode": work["mode"]}
 
 
@@ -243,16 +227,9 @@ def _build_new_plan(
     sunday: str,
 ) -> dict[str, Any]:
     cfg = read_config()
-    target = (
-        float(existing["target_hours"])
-        if existing and isinstance(existing.get("target_hours"), (int, float))
-        else float(cfg["contract_hours_default"])
-    )
+    target = float(existing["target_hours"]) if existing and isinstance(existing.get("target_hours"), (int, float)) else float(cfg["contract_hours_default"])
     plan = new_plan_skeleton(
-        plan_id=f"plan-{monday}-r-{uuid.uuid4().hex[:10]}",
-        monday=monday,
-        sunday=sunday,
-        target_hours=target,
+        plan_id=f"plan-{monday}-r-{uuid.uuid4().hex[:10]}", monday=monday, sunday=sunday, target_hours=target
     )
     plan["contract_hours_default"] = float(cfg["contract_hours_default"])
     rows: list[dict[str, Any]] = []
@@ -278,6 +255,7 @@ def _entry_from_decision(source: dict[str, Any], decision: dict[str, Any], *, pr
     duration = float(source.get("duration_seconds") or 0)
     prior_ids = [str(value) for value in (prior or {}).get("clockify_source_ids") or []]
     reusable_entry_id = (prior or {}).get("entry_id") if len(prior_ids) == 1 else None
+    ignored = bool(decision.get("ignored", False))
     row: dict[str, Any] = {
         "entry_id": str(reusable_entry_id or f"clockify-{source_id}"),
         "clockify_source_ids": [source_id],
@@ -290,15 +268,20 @@ def _entry_from_decision(source: dict[str, Any], decision: dict[str, Any], *, pr
         "booking_mode": decision["booking_mode"],
         "tier": decision["tier"],
         "overall_tier": decision["tier"],
-        "ignored": bool(decision.get("ignored", False)),
+        "ignored": ignored,
         "mapping_state": "RESOLVED",
         "why": str(decision.get("why") or "").strip(),
         "why_not_auto": str(decision.get("why_not_auto") or "").strip(),
         "mapping_source": deepcopy(decision.get("mapping_source")),
         "confidence": decision.get("confidence"),
-        "billable": bool(decision.get("billable", True)),
+        "billable": False if ignored else bool(decision.get("billable", True)),
     }
-    if decision["booking_mode"] == "assignment":
+
+    if ignored:
+        row["booking_mode"] = "direct"
+        row["direct_mapping"] = {}
+        row["assignment"] = {}
+    elif decision["booking_mode"] == "assignment":
         row["assignment"] = deepcopy(decision.get("assignment") or {})
         row["direct_mapping"] = {}
     else:
@@ -333,12 +316,22 @@ def _validate_decision(raw: dict[str, Any]) -> dict[str, Any]:
         raise ContractError(f"mapping decision {source_id} has invalid tier {tier!r}")
     result["tier"] = tier
 
+    ignored = bool(result.get("ignored", False))
+    if ignored:
+        # 0.6.3: ignored means covered-by-plan but intentionally not bookable.
+        # Hermes does not need to invent a target or even provide booking_mode.
+        result["booking_mode"] = "direct"
+        result["direct_mapping"] = {}
+        result["assignment"] = {}
+        result["billable"] = False
+        return result
+
     mode = str(result.get("booking_mode") or "").lower()
     if mode not in {"assignment", "direct"}:
         raise ContractError(f"mapping decision {source_id} has invalid booking_mode {mode!r}")
     result["booking_mode"] = mode
 
-    if not bool(result.get("ignored", False)) and tier == "AUTO":
+    if tier == "AUTO":
         if mode == "assignment":
             if not str((result.get("assignment") or {}).get("id") or "").strip():
                 raise ContractError(f"AUTO decision {source_id} requires assignment.id")
