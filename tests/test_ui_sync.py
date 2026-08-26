@@ -21,12 +21,15 @@ def test_ui_sync_does_not_import_provider_clients():
     assert not any("simplicate" in name.lower() for name in imported_modules)
 
 
-def test_upgrade_sync_prompt_repairs_unprocessed_coverage_without_plan_sync():
+def test_upgrade_sync_prompt_repairs_coverage_before_mapping():
     upgraded = ui_sync._upgrade_sync_prompt("sync week")
     assert "unprocessed_count > 0" in upgraded
     assert "timesheet_source_rebaseline" in upgraded
-    assert "do NOT construct or call timesheet_plan_sync" in upgraded
-    assert "unresolved ASK entries" in upgraded
+    assert "Do NOT stop after coverage repair" in upgraded
+    assert "map ONLY entries that were created" in upgraded
+    assert "preserve all previously reviewed/mapped entries unchanged" in upgraded
+    assert "timesheet_plan_sync" in upgraded
+    assert "Never book hours to Simplicate" in upgraded
 
 
 def test_launch_sync_only_starts_hermes(monkeypatch, tmp_path):
@@ -39,4 +42,5 @@ def test_launch_sync_only_starts_hermes(monkeypatch, tmp_path):
     sent_prompt=calls[0][0][-1]
     assert sent_prompt.startswith("sync week")
     assert "timesheet_source_rebaseline" in sent_prompt
+    assert "map ONLY entries that were created" in sent_prompt
     assert "hermes" in calls[0][0][0]
