@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-import json
 import os
 import shutil
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 
-__version__ = "0.5.17"
+__version__ = "0.6.0"
 
 # Keep only the latest two mutable working revisions by default. Approval
 # snapshots, receipts and feedback are stored separately and remain immutable.
@@ -40,7 +38,7 @@ def _bootstrap_shared_state() -> None:
     if "streamlit" in argv or "frontend/app.py" in argv:
         try:
             from .storage import PlanRepository
-            PlanRepository(root).compact_all()
+            PlanRepository(root).compact_all_working_revisions()
         except Exception:
             pass
 
