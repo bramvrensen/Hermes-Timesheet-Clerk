@@ -32,8 +32,10 @@ def _upgrade_sync_prompt(prompt: str) -> str:
         "source facts such as description, project, times and original duration are refreshed from the live source. After each pending "
         "target has been evaluated, set mapping_state='RESOLVED' even when the resulting tier remains ASK; replace the ingestion sentinel "
         "in why_not_auto with the actual mapping reason. Persist through timesheet_plan_sync using the complete active plan. Never book "
-        "hours to Simplicate during refresh. IMPORTANT: pending mapping is independent from source_delta.has_changes. If the probe is a "
-        "source no-op but the active plan still contains PENDING or legacy-ingestion-sentinel entries, map those entries before stopping."
+        "hours to Simplicate during refresh. DESTRUCTIVE RECOVERY IS FORBIDDEN: never delete/reset/recreate the week and never attempt "
+        "Fresh Start as an error-recovery strategy. If sync fails, stop and report the exact tool error while preserving the current plan. "
+        "IMPORTANT: pending mapping is independent from source_delta.has_changes. If the probe is a source no-op but the active plan still "
+        "contains PENDING or legacy-ingestion-sentinel entries, map those entries before stopping."
     )
     return prompt
 
