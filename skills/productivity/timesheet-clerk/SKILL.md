@@ -11,29 +11,28 @@ Prepare a deterministic, reviewable weekly booking plan. Do not book hours while
 ## Tool-only state access
 Timesheet Clerk state is owned by `timesheet_*` tools. Never read, search, infer or edit Clerk plan/config/SKILL state through filesystem, terminal, generic file tools, Drive or guessed paths. Clockify range arguments must use full ISO-8601 timestamps.
 
-## Fresh start workflow
-Use this only when the user explicitly asks to discard the mutable working plan for a week and rebuild it from scratch.
+## Fresh Start safety
+Fresh Start is a destructive frontend-only operation. It is not a planner recovery tool and is intentionally not exposed as a Hermes tool.
 
-- Call `timesheet_plan_fresh_start` with the exact Monday and Sunday of the week.
-- The tool removes only mutable `DRAFT`/`IN_REVIEW` plans for that exact week. It never deletes approvals, receipts, feedback or learned rules and refuses to proceed when protected/non-working plan state exists for that week.
-- After a successful reset, do not call `timesheet_sync_probe` and do not call `timesheet_plan_sync`.
-- Re-read the complete Clockify week, runtime config, learning context and the Simplicate context required to map the full week.
-- Treat every current Clockify row as new input. Map every row from scratch using the normal AUTO/PROPOSE/ASK policy.
-- Build one complete brand-new weekly plan covering every Clockify source row and persist it with `timesheet_plan_create`.
-- Present the deterministic summary from the newly created plan. Never book hours during Fresh Start.
-- Do not stop after `timesheet_plan_fresh_start`; a Fresh Start is complete only after the new fully mapped plan has been created.
+- Never delete, reset or recreate a working week as an error-recovery strategy during normal refresh.
+- If a sync or create call fails, preserve the current working plan and report the exact tool error.
+- A human may explicitly start Fresh Start from the Timesheet Clerk frontend. The frontend performs the reset first and then launches a dedicated full rebuild run.
+- During such a dedicated rebuild, read the complete Clockify week, runtime config, learning context and the Simplicate context required to map the full week. Treat every current Clockify row as new input, map every row using the normal AUTO/PROPOSE/ASK policy and persist exactly one complete plan with `timesheet_plan_create`.
+- Never book hours during Fresh Start.
 
 ## Refresh workflow
 For every normal refresh, call `timesheet_sync_probe` first. Source-change detection and pending mapping are separate concerns.
 
 - If `source_delta.requires_rebaseline` is true or `source_delta.unprocessed_count > 0`, call `timesheet_source_rebaseline` for the same interval. Coverage repair creates safe unresolved ASK entries and preserves existing human review.
-- After probing/repair, read `timesheet_plan_active` when mapping may still be pending.
-- Mapping targets are exactly: entries with `mapping_state: PENDING`, plus backward-compatible pre-0.5.12 ASK entries whose `why_not_auto` is exactly `Clockify source ingested; Simplicate mapping still requires resolution.`
+- After probing/repair, read `timesheet_plan_active` when mapping may still be pending or when `source_delta.changed_entries` is non-empty.
+- Mapping targets are: entries covering Clockify IDs present in `source_delta.changed_entries`, entries with `mapping_state: PENDING`, plus backward-compatible pre-0.5.12 ASK entries whose `why_not_auto` is exactly `Clockify source ingested; Simplicate mapping still requires resolution.`
 - Pending mapping must still be processed even when `timesheet_sync_probe.has_changes` is false. A source no-op does not mean mapping is complete.
-- Map only those targets. Never remap unrelated existing entries.
+- Re-evaluate changed existing entries and map only those targets plus pending/legacy targets. Never remap unrelated existing entries.
 - Read config, learning context and only the Simplicate context needed for those targets. Apply the same AUTO/PROPOSE/ASK policy used for initial plan generation.
-- After each target has been evaluated, set `mapping_state: RESOLVED`, even if its final tier remains ASK. Replace the ingestion sentinel with the actual reason why AUTO was not possible.
-- Persist via `timesheet_plan_sync` using the complete active plan. Never book during refresh.
+- For changed existing entries, preserve prior human-reviewed mapping fields unless the changed Clockify facts invalidate them. The canonical Clockify source facts themselves must always refresh from the live source through `timesheet_plan_sync`.
+- After each pending target has been evaluated, set `mapping_state: RESOLVED`, even if its final tier remains ASK. Replace the ingestion sentinel with the actual reason why AUTO was not possible.
+- Persist via `timesheet_plan_sync`. Incremental payloads may contain only target entries; structural week/revision metadata is normalized against the stored working plan by the plugin.
+- Never book during refresh. If sync fails, stop and report the exact error. Never attempt destructive recovery.
 
 ## Clockify source fidelity
 Every normalized Clockify row is an immutable source bundle. Keep its ID, description, client, project, tags, start, end and duration together. Canonical source comparison uses per-Clockify-ID snapshots and is independent from booking mapping or human review.
