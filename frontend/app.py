@@ -13,6 +13,7 @@ import timesheet_clerk.ui_admin as ui_admin
 from timesheet_clerk.state_selection import ensure_active_plan, has_working_week
 from timesheet_clerk.storage import PlanNotFound
 from timesheet_clerk.ui_booking import render_booking
+from timesheet_clerk.ui_choices import hour_types_for_service
 from timesheet_clerk.ui_planner import start_planner
 from timesheet_clerk.ui_sync import clear_sync_status, sync_status
 
@@ -78,8 +79,6 @@ def _generate_current_week_action(*, compact: bool = False) -> None:
         st.info(f"No working plan exists for the current week. Build {monday} through {sunday} from live sources.")
 
     if st.button("Generate current week", type="primary", use_container_width=True, key=f"generate-current-{monday}"):
-        # This is a CREATE when the week is absent. rebuild=False is deliberate:
-        # historical plans may exist and must not affect or be replaced by this run.
         result = start_planner(review.repo.root, monday, sunday, rebuild=False)
         st.success(f"Current-week generation started · run {result['run_id'][:8]}")
 
@@ -89,12 +88,69 @@ def _bootstrap_current_week() -> None:
     _render_job_status()
 
 
-# review_app still owns the mature review surface. Replace only its orchestration
-# hooks; all plan writes now go through the 0.6 deterministic core.
+def _direct_editor_scoped(plan: dict, entry: dict) -> dict:
+    """Direct mapping editor with service-scoped Simplicate hour types only."""
+    mapping = deepcopy(entry.get("direct_mapping") or {})
+    ctx = plan.get("review_context") or {}
+
+    customer = review._select_row(
+        "Customer",
+        ctx.get("customers") or [],
+        mapping.get("customer_id") or "",
+        f"c-{entry['entry_id']}",
+    )
+    customer_id = review._plain_id(customer)
+    projects = [
+        row for row in ctx.get("projects") or []
+        if not customer_id or review._plain_id(row.get("customer_id")) == customer_id
+    ]
+    project = review._select_row(
+        "Project", projects, mapping.get("project_id") or "", f"p-{entry['entry_id']}"
+    )
+    project_id = review._plain_id(project)
+    services = [
+        row for row in ctx.get("services") or []
+        if not project_id or not row.get("project_id") or review._plain_id(row.get("project_id")) == project_id
+    ]
+    service = review._select_row(
+        "Task / service", services, mapping.get("service_id") or "", f"s-{entry['entry_id']}"
+    )
+    service_id = review._plain_id(service)
+
+    hour_types = hour_types_for_service(ctx, service_id)
+    preferred = str(review.read_config().get("preferred_hour_type") or "").casefold()
+    if preferred:
+        hour_types.sort(
+            key=lambda row: (0 if review._name(row).casefold() == preferred else 1, review._name(row).casefold())
+        )
+
+    current_hour_type = mapping.get("hour_type_id") or ""
+    if service_id and not hour_types:
+        st.warning("No valid hour types are available for the selected Task / service.")
+        hour_type = None
+    else:
+        hour_type = review._select_row(
+            "Hour type", hour_types, current_hour_type, f"h-{entry['entry_id']}"
+        )
+
+    return {
+        "customer_id": customer_id or None,
+        "customer_name": review._name(customer) if customer else None,
+        "project_id": project_id or None,
+        "project_name": review._name(project) if project else None,
+        "service_id": service_id or None,
+        "service_name": review._name(service) if service else None,
+        "hour_type_id": review._plain_id(hour_type) or None,
+        "hour_type_name": review._name(hour_type) if hour_type else None,
+        "billable": bool(mapping.get("billable", True)),
+    }
+
+
+# review_app still owns the mature review surface. Replace only hooks that the
+# deterministic 0.6 shell needs to control.
 review._trigger_planner = _trigger_refresh
-# The legacy widget understands lowercase pre-0.6 status only and would label
-# RUNNING as finished. 0.6 renders its supervised job status here instead.
 review._sync_status_widget = lambda: None
+review._direct_editor = _direct_editor_scoped
 ui_admin._fresh_start_active_week = _safe_rebuild_active_week
 
 
