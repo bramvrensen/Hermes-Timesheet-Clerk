@@ -124,3 +124,60 @@ def test_safe_rebuild_does_not_delete_old_plan_before_replacement(tmp_path, monk
     assert rebuilt["plan_id"] != old["plan_id"]
     assert repo.get_latest(old["plan_id"])["plan_id"] == old["plan_id"]
     assert repo.get_active()["plan_id"] == rebuilt["plan_id"]
+
+
+def test_removed_source_is_reconciled_even_when_snapshot_baseline_lost_it(tmp_path, monkeypatch):
+    """Plan coverage, not only snapshot history, detects deleted Clockify rows."""
+    monkeypatch.setattr(orchestration, "read_config", _cfg)
+    repo = PlanRepository(tmp_path)
+    created = orchestration.apply_mapping_decisions(
+        repo,
+        [source("c1"), source("c2", "Second", "2026-08-24T11:00:00+02:00")],
+        monday="2026-08-24",
+        sunday="2026-08-30",
+        decisions=[direct_decision("c1"), direct_decision("c2")],
+    )["plan"]
+
+    # Simulate the legacy corruption seen in production: the plan still covers c2,
+    # but the immutable snapshot baseline no longer contains c2.
+    corrupted = deepcopy(created)
+    corrupted["clockify_source_snapshots"].pop("c2")
+    repo.save_revision(corrupted, expected_revision=1)
+
+    work = orchestration.prepare_mapping_work(
+        repo, [source("c1")], monday="2026-08-24", sunday="2026-08-30"
+    )
+    assert work["missing_source_ids"] == ["c2"]
+    assert work["no_op"] is False
+
+    refreshed = orchestration.apply_mapping_decisions(
+        repo, [source("c1")], monday="2026-08-24", sunday="2026-08-30", decisions=[]
+    )["plan"]
+    assert {sid for e in refreshed["entries"] for sid in e["clockify_source_ids"]} == {"c1"}
+    assert set(refreshed["clockify_source_snapshots"]) == {"c1"}
+
+
+def test_partial_loss_from_legacy_consolidated_entry_requires_explicit_rebuild(tmp_path, monkeypatch):
+    monkeypatch.setattr(orchestration, "read_config", _cfg)
+    repo = PlanRepository(tmp_path)
+    plan = orchestration.apply_mapping_decisions(
+        repo,
+        [source("c1"), source("c2", "Second", "2026-08-24T11:00:00+02:00")],
+        monday="2026-08-24",
+        sunday="2026-08-30",
+        decisions=[direct_decision("c1"), direct_decision("c2")],
+    )["plan"]
+
+    consolidated = deepcopy(plan)
+    first, second = consolidated["entries"]
+    first["clockify_source_ids"] = ["c1", "c2"]
+    first["original_duration_seconds"] += second["original_duration_seconds"]
+    first["planned_duration_seconds"] += second["planned_duration_seconds"]
+    consolidated["entries"] = [first]
+    repo.save_revision(consolidated, expected_revision=1)
+
+    with pytest.raises(StateConflict, match="requires_explicit_rebuild") as exc:
+        orchestration.apply_mapping_decisions(
+            repo, [source("c1")], monday="2026-08-24", sunday="2026-08-30", decisions=[]
+        )
+    assert "Do not retry with rebuild=true automatically" in str(exc.value)
