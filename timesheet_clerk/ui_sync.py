@@ -1,8 +1,7 @@
 """Background planner job transport shared with Streamlit.
 
-0.6 runs a supervised helper process. The helper writes RUNNING -> SUCCEEDED/FAILED
-with an exit code, so the frontend never relies on a stale fire-and-forget PID as
-its source of truth.
+0.6 runs a supervised helper process. The helper is the sole owner of RUNNING ->
+SUCCEEDED/FAILED terminal state, preventing stale or raced status writes.
 """
 from __future__ import annotations
 
@@ -17,9 +16,9 @@ from typing import Any
 
 
 def launch_sync(*, root: Path, profile: str, prompt: str, apply_refresh_contract: bool = False) -> dict[str, Any]:
-    del apply_refresh_contract  # retained only for compatibility with older frontend calls
+    del apply_refresh_contract  # compatibility with pre-0.6 frontend calls
     run_id = uuid.uuid4().hex
-    payload = {
+    starting = {
         "run_id": run_id,
         "pid": None,
         "profile": profile,
@@ -27,17 +26,20 @@ def launch_sync(*, root: Path, profile: str, prompt: str, apply_refresh_contract
         "status": "STARTING",
         "message": "Starting Timesheet Clerk planner…",
     }
-    _write(root, payload)
+    _write(root, starting)
     child = subprocess.Popen(
         [sys.executable, "-m", "timesheet_clerk.job_runner", str(root), profile, prompt, run_id],
         cwd=str(Path(__file__).resolve().parents[1]),
         start_new_session=True,
     )
-    payload["pid"] = child.pid
-    payload["status"] = "RUNNING"
-    payload["message"] = "Planner is mapping Timesheet Clerk work items."
-    _write(root, payload)
-    return payload
+    # Do not persist RUNNING here. job_runner owns all state after spawn; writing
+    # from the parent would race a very fast child that already finished.
+    return {
+        **starting,
+        "pid": child.pid,
+        "status": "RUNNING",
+        "message": "Planner is mapping Timesheet Clerk work items.",
+    }
 
 
 def sync_status(root: Path) -> dict[str, Any] | None:
@@ -50,9 +52,8 @@ def sync_status(root: Path) -> dict[str, Any] | None:
         return None
     if payload.get("status") in {"STARTING", "RUNNING"}:
         pid = int(payload.get("pid") or 0)
+        # STARTING without a pid is allowed briefly while the child initializes.
         if pid and not _pid_running(pid):
-            # Normally job_runner writes a terminal state itself. If it died before
-            # doing so, fail closed instead of leaving an eternal RUNNING status.
             payload.update({
                 "status": "FAILED",
                 "finished_at": datetime.now(timezone.utc).isoformat(),
