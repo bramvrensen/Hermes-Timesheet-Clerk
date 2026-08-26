@@ -2,6 +2,28 @@
 
 `DESIGN.md` is the functional source of truth. Deployment details live in `DEPLOYMENT.md`.
 
+## 0.6.2 current-week state selection
+
+0.6.2 fixes the frontend case where a historical plan exists but the current calendar week does not.
+
+The active plan pointer is intentionally not treated as proof that the current week exists. The frontend now asks the plan catalog whether an exact working week exists:
+
+```text
+has_working_week(repo, monday, sunday)
+```
+
+Behaviour:
+
+- an older active week remains reviewable;
+- if the current Monday/Sunday has no `DRAFT` or `IN_REVIEW` plan, the Review tab shows `Generate current week`;
+- current-week generation starts with `rebuild=false`;
+- because no working plan exists for that exact week, `timesheet_mapping_prepare` selects CREATE mode;
+- historical plans are not rebuilt, superseded or deleted;
+- once the current week exists, the Generate action disappears;
+- detection is independent from `active_plan.json`.
+
+Regression tests cover both directions: historical active week + missing current week, and current week present while a historical week remains active.
+
 ## 0.6.1 removed-source reconciliation
 
 0.6.1 is a targeted correction on top of the 0.6 decisions-only architecture.
@@ -28,7 +50,7 @@ Behaviour:
 - a legacy consolidated row whose complete source bundle disappeared is removed deterministically;
 - if only part of a legacy consolidated bundle disappeared, the plugin returns `requires_explicit_rebuild` instead of guessing how the old aggregate should be split;
 - `requires_explicit_rebuild` explicitly states that HERMES must not retry with `rebuild=true` automatically;
-- planner prompts and the runtime SKILL guard now make the `rebuild` flag immutable for the duration of a run;
+- planner prompts and the runtime SKILL guard make the `rebuild` flag immutable for the duration of a run;
 - a rebuild may start only through a new explicit user action/request.
 
 Regression tests cover both orphan-source cleanup and partial-loss consolidated entries.
@@ -252,6 +274,7 @@ Regression coverage includes:
 - failed rebuild preserving the old active plan;
 - removal of orphaned plan source IDs even when snapshot history lost them;
 - explicit-rebuild failure for partial loss of a legacy consolidated source bundle;
+- current-week detection independent from the active historical plan;
 - absence of destructive/legacy tools from the manifest and plugin surface;
 - supervised planner runner launch;
 - dead-runner failure detection.
