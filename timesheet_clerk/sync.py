@@ -4,7 +4,7 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
-_SOURCE_FIELDS = ("description", "client", "project", "start", "end", "duration_seconds")
+_SOURCE_FIELDS = ("description", "client", "project", "tags", "start", "end", "duration_seconds")
 
 
 def plan_summary(plan: dict[str, Any], *, source_delta: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -22,7 +22,8 @@ def plan_summary(plan: dict[str, Any], *, source_delta: dict[str, Any] | None = 
     delta = source_delta or {}
     return {
         "plan_id": plan.get("plan_id"), "revision": plan.get("revision"), "status": plan.get("status"),
-        "source_sync_at": plan.get("source_sync_at"), "clocked_hours": hours(clocked), "workable_hours": hours(workable),
+        "source_sync_at": plan.get("source_sync_at"), "clocked_hours": hours(clocked), "workable_hours": hours(workable,
+        ) if False else hours(workable),
         "billable_hours": hours(billable), "booked_hours": hours(booked), "open_hours": hours(max(0.0, workable-booked)),
         "ignored_count": sum(1 for e in entries if e.get("ignored")), "pending_review_count": pending,
         "entry_count": len(entries), "new_source_count": int(delta.get("new_count",0)),
