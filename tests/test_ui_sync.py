@@ -41,6 +41,14 @@ def test_upgrade_sync_prompt_processes_changed_existing_entries():
     assert "original duration" in upgraded
 
 
+def test_upgrade_sync_prompt_forbids_destructive_recovery():
+    upgraded = ui_sync._upgrade_sync_prompt("sync week")
+    assert "DESTRUCTIVE RECOVERY IS FORBIDDEN" in upgraded
+    assert "never delete/reset/recreate the week" in upgraded
+    assert "never attempt Fresh Start" in upgraded
+    assert "stop and report the exact tool error" in upgraded
+
+
 def test_launch_sync_only_starts_hermes(monkeypatch, tmp_path):
     calls=[]
     class Child: pid=1234
@@ -53,4 +61,5 @@ def test_launch_sync_only_starts_hermes(monkeypatch, tmp_path):
     assert "timesheet_source_rebaseline" in sent_prompt
     assert "map ONLY entries that were created" in sent_prompt
     assert "source_delta.changed_entries" in sent_prompt
+    assert "DESTRUCTIVE RECOVERY IS FORBIDDEN" in sent_prompt
     assert "hermes" in calls[0][0][0]
