@@ -76,9 +76,12 @@ def _bootstrap_current_week() -> None:
     _render_job_status()
 
 
-# review_app still owns the mature review surface. Replace only its old planner
-# launch callback; mapping/persistence remain in the 0.6 Python core.
+# review_app still owns the mature review surface. Replace only its orchestration
+# hooks; all plan writes now go through the 0.6 deterministic core.
 review._trigger_planner = _trigger_refresh
+# The legacy widget understands lowercase pre-0.6 status only and would label
+# RUNNING as finished. 0.6 renders its supervised job status here instead.
+review._sync_status_widget = lambda: None
 ui_admin._fresh_start_active_week = _safe_rebuild_active_week
 
 
