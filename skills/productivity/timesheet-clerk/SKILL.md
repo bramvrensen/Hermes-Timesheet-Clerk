@@ -11,8 +11,20 @@ Prepare a deterministic, reviewable weekly booking plan. Do not book hours while
 ## Tool-only state access
 Timesheet Clerk state is owned by `timesheet_*` tools. Never read, search, infer or edit Clerk plan/config/SKILL state through filesystem, terminal, generic file tools, Drive or guessed paths. Clockify range arguments must use full ISO-8601 timestamps.
 
+## Fresh start workflow
+Use this only when the user explicitly asks to discard the mutable working plan for a week and rebuild it from scratch.
+
+- Call `timesheet_plan_fresh_start` with the exact Monday and Sunday of the week.
+- The tool removes only mutable `DRAFT`/`IN_REVIEW` plans for that exact week. It never deletes approvals, receipts, feedback or learned rules and refuses to proceed when protected/non-working plan state exists for that week.
+- After a successful reset, do not call `timesheet_sync_probe` and do not call `timesheet_plan_sync`.
+- Re-read the complete Clockify week, runtime config, learning context and the Simplicate context required to map the full week.
+- Treat every current Clockify row as new input. Map every row from scratch using the normal AUTO/PROPOSE/ASK policy.
+- Build one complete brand-new weekly plan covering every Clockify source row and persist it with `timesheet_plan_create`.
+- Present the deterministic summary from the newly created plan. Never book hours during Fresh Start.
+- Do not stop after `timesheet_plan_fresh_start`; a Fresh Start is complete only after the new fully mapped plan has been created.
+
 ## Refresh workflow
-For every refresh, call `timesheet_sync_probe` first. Source-change detection and pending mapping are separate concerns.
+For every normal refresh, call `timesheet_sync_probe` first. Source-change detection and pending mapping are separate concerns.
 
 - If `source_delta.requires_rebaseline` is true or `source_delta.unprocessed_count > 0`, call `timesheet_source_rebaseline` for the same interval. Coverage repair creates safe unresolved ASK entries and preserves existing human review.
 - After probing/repair, read `timesheet_plan_active` when mapping may still be pending.
