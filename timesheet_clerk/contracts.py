@@ -83,9 +83,18 @@ def validate_entry(entry: dict[str, Any], *, index: int | None = None) -> None:
     if tier not in ENTRY_TIERS:
         raise ContractError(f"{prefix}.tier must be AUTO, PROPOSE or ASK")
 
+    # Ignored entries deliberately cover Clockify source truth without representing
+    # a Simplicate booking target. They may therefore carry empty assignment/direct
+    # target objects even when their tier/review state would otherwise require a
+    # complete resolved mapping.
+    ignored = bool(entry.get("ignored", False))
+
     # DRAFT/IN_REVIEW plans may deliberately contain unresolved targets for ASK
-    # or PROPOSE entries. AUTO entries and reviewed entries must be complete.
-    must_be_complete = tier == "AUTO" or entry.get("review_state") in {"confirmed", "corrected"}
+    # or PROPOSE entries. AUTO entries and reviewed entries must be complete unless
+    # the entry is explicitly ignored.
+    must_be_complete = not ignored and (
+        tier == "AUTO" or entry.get("review_state") in {"confirmed", "corrected"}
+    )
     if mode == "assignment":
         target = entry.get("assignment")
         if target is not None and not isinstance(target, dict):
