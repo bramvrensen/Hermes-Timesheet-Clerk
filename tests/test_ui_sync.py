@@ -63,3 +63,17 @@ def test_launch_sync_only_starts_hermes(monkeypatch, tmp_path):
     assert "source_delta.changed_entries" in sent_prompt
     assert "DESTRUCTIVE RECOVERY IS FORBIDDEN" in sent_prompt
     assert "hermes" in calls[0][0][0]
+
+
+def test_full_rebuild_launch_does_not_append_refresh_contract(monkeypatch, tmp_path):
+    calls=[]
+    class Child: pid=5678
+    def fake_popen(args,**kwargs): calls.append((args,kwargs)); return Child()
+    monkeypatch.setattr(ui_sync.subprocess,"Popen",fake_popen)
+
+    result=ui_sync.launch_sync(root=tmp_path,profile="atlas",prompt="full rebuild",apply_refresh_contract=False)
+
+    assert result["status"]=="running" and result["pid"]==5678
+    sent_prompt=calls[0][0][-1]
+    assert sent_prompt == "full rebuild"
+    assert "IMPORTANT REFRESH CONTRACT" not in sent_prompt
