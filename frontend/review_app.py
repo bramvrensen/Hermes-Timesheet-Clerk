@@ -172,6 +172,13 @@ def _target_complete(reviewed: dict[str, Any]) -> bool:
     mapping=reviewed.get("direct_mapping") or {}; return all(str(mapping.get(k) or "").strip() for k in ("project_id","service_id","hour_type_id"))
 
 
+def _adjust_duration(duration_key: str, delta: float, absolute: bool=False) -> None:
+    """Streamlit callback: runs before the widget is recreated on rerun."""
+    current=float(st.session_state.get(duration_key,0.0))
+    value=float(delta) if absolute else current+float(delta)
+    st.session_state[duration_key]=max(0.0,min(24.0,value))
+
+
 def _editor(plan: dict[str, Any], entry: dict[str, Any]) -> None:
     """Edit one entry transactionally. Controls stage values; only Save commits."""
     if _status(entry)=="SKIP":
@@ -184,10 +191,8 @@ def _editor(plan: dict[str, Any], entry: dict[str, Any]) -> None:
     cols=st.columns([1.35,.72,.72,.72,.72,.72,.9])
     with cols[0]: st.number_input("Hours",min_value=0.0,max_value=24.0,step=.25,format="%.2f",key=duration_key)
     for col,(delta,label) in zip(cols[1:6],[(-1.0,"−1h"),(-.5,"−30"),(-.25,"−15"),(.25,"+15"),(.5,"+30")]):
-        with col:
-            if st.button(label,key=f"d-{delta}-{entry['entry_id']}",use_container_width=True): st.session_state[duration_key]=max(0.0,min(24.0,float(st.session_state[duration_key])+delta)); st.rerun(scope="fragment")
-    with cols[6]:
-        if st.button("Reset",key=f"reset-{entry['entry_id']}",disabled=abs(float(st.session_state[duration_key])-original)<.001,use_container_width=True): st.session_state[duration_key]=float(original); st.rerun(scope="fragment")
+        with col: st.button(label,key=f"d-{delta}-{entry['entry_id']}",use_container_width=True,on_click=_adjust_duration,args=(duration_key,delta))
+    with cols[6]: st.button("Reset",key=f"reset-{entry['entry_id']}",disabled=abs(float(st.session_state[duration_key])-original)<.001,use_container_width=True,on_click=_adjust_duration,args=(duration_key,original,True))
     mode=st.radio("Booking mode",["assignment","direct"],horizontal=True,index=0 if entry.get("booking_mode")=="assignment" else 1,key=f"mode-{entry['entry_id']}"); reviewed={"booking_mode":mode,"planned_duration_seconds":round(float(st.session_state[duration_key])*3600)}
     if mode=="assignment":
         options=_assignment_options(plan,entry); current_id=_plain_id(entry.get("assignment")); selected=st.selectbox("Assignment",options,index=next((i for i,r in enumerate(options) if _plain_id(r)==current_id),0) if options else None,format_func=_assignment_label,key=f"a-{entry['entry_id']}",disabled=not options) if options else None; reviewed["assignment"]=deepcopy(selected) if selected else {}
