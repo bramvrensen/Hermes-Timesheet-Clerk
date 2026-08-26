@@ -10,7 +10,7 @@ import streamlit as st
 
 import review_app as review
 import timesheet_clerk.ui_admin as ui_admin
-from timesheet_clerk.state_selection import ensure_active_plan
+from timesheet_clerk.state_selection import ensure_active_plan, has_working_week
 from timesheet_clerk.storage import PlanNotFound
 from timesheet_clerk.ui_booking import render_booking
 from timesheet_clerk.ui_planner import start_planner
@@ -67,12 +67,25 @@ def _safe_rebuild_active_week(repo) -> None:
         st.success(f"Safe rebuild started · run {result['run_id'][:8]}. Existing state remains available until replacement succeeds.")
 
 
-def _bootstrap_current_week() -> None:
+def _generate_current_week_action(*, compact: bool = False) -> None:
     monday, sunday = _current_week()
-    st.info(f"No working plan exists for the current state. Build week {monday} through {sunday} from live sources.")
-    if st.button("Generate current week", type="primary", use_container_width=True):
-        result = start_planner(review.repo.root, monday, sunday, rebuild=True)
+    if has_working_week(review.repo, monday, sunday):
+        return
+
+    if compact:
+        st.info(f"Current week {monday} → {sunday} has no working plan yet.")
+    else:
+        st.info(f"No working plan exists for the current week. Build {monday} through {sunday} from live sources.")
+
+    if st.button("Generate current week", type="primary", use_container_width=True, key=f"generate-current-{monday}"):
+        # This is a CREATE when the week is absent. rebuild=False is deliberate:
+        # historical plans may exist and must not affect or be replaced by this run.
+        result = start_planner(review.repo.root, monday, sunday, rebuild=False)
         st.success(f"Current-week generation started · run {result['run_id'][:8]}")
+
+
+def _bootstrap_current_week() -> None:
+    _generate_current_week_action(compact=False)
     _render_job_status()
 
 
@@ -116,6 +129,7 @@ def main() -> None:
         ["Review", "Booking", "Configuration", "SKILL", "State"]
     )
     with review_tab:
+        _generate_current_week_action(compact=True)
         review._review_page(stored, plan)
         _render_job_status()
     with booking_tab:
