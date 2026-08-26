@@ -1,64 +1,153 @@
 # Implementation status
 
-`DESIGN.md` remains the functional source of truth. Deployment details live in `DEPLOYMENT.md`.
+`DESIGN.md` is the functional source of truth. Deployment details live in `DEPLOYMENT.md`.
 
-## 0.4.4
+## 0.6.0 architecture cleanup
+
+0.6.0 replaces the accumulated 0.5.x planner orchestration rather than layering another compatibility patch on top of it.
 
 Implemented on `main`:
 
-- native HERMES `timesheet_clerk` toolset;
-- normalized Clockify and Simplicate reads;
-- `timesheet_sync_probe` as the mandatory cheap first step for repeated week refreshes;
-- immutable `clockify_source_snapshots` keyed per Clockify ID, independent from aggregate booking entries;
-- explicit `requires_rebaseline` for legacy plans instead of guessing source changes from aggregate fields;
-- deterministic `timesheet_source_rebaseline` that refreshes source truth while preserving human review decisions;
-- no-op fast path that stops before Simplicate/learning/full-plan context when Clockify did not change;
-- `timesheet_plan_summary` plus deterministic summaries returned from probe/sync;
-- one open working plan per week and review preservation across planner syncs;
-- bounded human-review working revisions with optimistic locking, plus durable feedback and immutable approval snapshots;
-- shared agent-independent state under `/home/hermes/.hermes/timesheet-clerk` with ownership/mode normalization for Hermes agents and the optional UI;
-- profile-safe runtime SKILL discovery through `skills.external_dirs` for the configured planner profile;
-- editable runtime SKILL outside Git with real deterministic Hermes skill reload rather than an LLM `/reload-skills` prompt;
-- Streamlit week/day review with functional date navigation and modal entry editing;
-- planned-time visibility, duration edits, skip/restore, assignment override and direct mapping;
-- Hour Type selection from the complete Simplicate hour-type catalog, independent from customer/project/task filters, with configured preference ordering;
-- incomplete PROPOSE/ASK entries remain unresolved after partial edits and therefore no longer trigger resolved-target contract errors;
-- live background planner-sync status persisted in `planner-sync-status.json` and refreshed in the UI;
-- configurable planner profile, confidence policy, preferred hour type and booked-artifact retention;
-- managed frontend launcher with restart marker and child-process reaping;
-- `timesheet_update`: fast-forward Git update, compile/test smoke check and Hermes-native supervised gateway restart, independent from Streamlit and Docker restart;
-- canonical deployment smoke-test documentation plus GitHub Actions compile/test workflow.
+- decisions-only planner contract: HERMES maps exact work items, Python owns booking-plan construction;
+- `timesheet_mapping_prepare` computes CREATE / REFRESH / REBUILD work from live Clockify source truth and existing Clerk state;
+- `timesheet_mapping_apply` accepts mapping decisions only and deterministically builds or merges the complete plan;
+- legacy planner mutation tools are removed from the HERMES surface: `timesheet_plan_create`, `timesheet_plan_sync`, `timesheet_source_rebaseline` and `timesheet_plan_fresh_start`;
+- `plugin_legacy.py` and runtime monkeypatching are removed;
+- Clockify descriptions, timestamps, durations, IDs and week metadata are never copied from LLM-authored plan JSON;
+- changed Clockify source data is re-fetched at apply time;
+- complete live-source coverage is validated before persistence;
+- incremental refresh preserves confirmed/corrected/skipped human review decisions;
+- safe week rebuild is create-before-switch: an existing plan remains active until a complete replacement validates and persists successfully;
+- failed rebuilds do not delete or reset existing plan state;
+- the destructive legacy `fresh_start_week()` path is disabled;
+- missing/stale `active_plan.json` can be recovered deterministically from stored plans;
+- supervised planner jobs use explicit `STARTING`, `RUNNING`, `SUCCEEDED` and `FAILED` lifecycle state with exit code and timestamps;
+- a vanished planner process is reported as `FAILED`, not left indefinitely `RUNNING`;
+- runtime `SKILL.md` receives a mandatory 0.6 contract guard so old live instructions cannot re-enable obsolete workflows;
+- Streamlit can expose Configuration, SKILL and State even when no active plan exists;
+- CI runs compile + pytest on every push to `main`, pull request and manual workflow dispatch;
+- Simplicate writes remain deliberately disabled pending controlled write validation.
 
-Simplicate writes remain intentionally disabled pending controlled write validation.
+## 0.6 planner sequence
 
-## Sync sequence
-
-Existing week refresh:
+Normal create/refresh:
 
 ```text
-timesheet_sync_probe
-  ├─ requires_rebaseline → timesheet_source_rebaseline → probe again
-  ├─ no source changes   → deterministic summary → stop
-  └─ genuine changes     → new/changed Clockify rows only
-                              ↓
-                         mapping context
-                              ↓
-                         timesheet_plan_sync
-                              ↓
-                    refreshed source baseline
-                              ↓
-                    deterministic summary
+live Clockify week
+      ↓
+timesheet_mapping_prepare(rebuild=false)
+      ↓
+CREATE / REFRESH / NO_OP
+      ↓
+exact work_items only
+      ↓
+HERMES gathers only the context needed to decide mappings
+      ↓
+one mapping decision per source_id
+      ↓
+timesheet_mapping_apply(rebuild=false)
+      ↓
+Python re-fetches Clockify source truth
+      ↓
+build / merge / coverage validation / schema validation
+      ↓
+one persisted working revision
 ```
 
-The planner must not refetch a full Clockify week after a valid no-op probe. A real plan sync refreshes canonical source snapshots deterministically inside Timesheet Clerk.
+If `no_op=true`, the planner stops without inventing additional work.
 
-## Deterministic summary fields
+Explicit safe rebuild:
 
-Current summary includes plan ID, revision, status, source-sync timestamp, clocked/workable/billable/booked/open hours, ignored count, pending-review count, entry count and source-delta counts. These values are tool-owned and must not be recomputed by the LLM.
+```text
+timesheet_mapping_prepare(rebuild=true)
+      ↓
+all live Clockify rows become work_items
+      ↓
+HERMES returns one decision per source_id
+      ↓
+timesheet_mapping_apply(rebuild=true)
+      ↓
+build complete candidate plan in Python
+      ↓
+validate full Clockify coverage + plan contract
+      ↓
+persist and activate replacement
+      ↓
+best-effort mark previous working plan SUPERSEDED
+```
 
-## State
+There is no delete-first phase. Any failure before successful replacement leaves the previous plan available.
 
-Runtime state includes:
+## Responsibility boundary
+
+### HERMES owns
+
+- interpretation of work context;
+- choosing assignment/direct mapping;
+- autonomy tier (`AUTO`, `PROPOSE`, `ASK`);
+- mapping rationale, confidence and mapping-source evidence.
+
+### Python owns
+
+- plan identity and revisioning;
+- week boundaries;
+- Clockify source IDs and source payloads;
+- original duration and timestamps;
+- source snapshots and fingerprints;
+- CREATE/REFRESH/REBUILD mode;
+- merge behaviour;
+- preservation of reviewed mappings;
+- coverage and schema validation;
+- persistence and active-plan switching.
+
+HERMES must never use terminal, `execute_code`, filesystem manipulation or generic file tools to repair Timesheet Clerk state.
+
+## Mapping decision contract
+
+A mapping decision identifies one Clockify `source_id` and contains policy/mapping output, not source facts. Conceptually:
+
+```json
+{
+  "source_id": "clockify-id",
+  "tier": "AUTO",
+  "booking_mode": "direct",
+  "direct_mapping": {
+    "project_id": "...",
+    "project_name": "...",
+    "service_id": "...",
+    "service_name": "...",
+    "hour_type_id": "...",
+    "hour_type_name": "...",
+    "billable": true
+  },
+  "why": "mapping evidence",
+  "confidence": 0.98
+}
+```
+
+The plugin rejects incomplete AUTO mappings and decisions for source IDs that were not requested.
+
+## Source-change behaviour
+
+Source comparison is based on normalized Clockify facts. When an existing Clockify entry changes, for example its description:
+
+1. `timesheet_mapping_prepare` detects the changed source;
+2. HERMES receives that source as a work item;
+3. `timesheet_mapping_apply` re-fetches the live source before applying decisions;
+4. Python replaces the source facts in the plan;
+5. a previously human-reviewed booking target remains authoritative where applicable.
+
+This prevents the 0.5.x failure mode where stale source titles or malformed week metadata could survive because the LLM authored the complete plan payload.
+
+## State and recovery
+
+Production state remains outside the Git checkout under:
+
+```text
+/home/hermes/.hermes/timesheet-clerk
+```
+
+Important artifacts:
 
 ```text
 config.json
@@ -71,30 +160,85 @@ feedback_events.jsonl
 rules.json
 logs/
 planner-sync-status.json
-frontend-restart.request   # transient
+frontend-restart.request
 ```
 
-`plans/` contains bounded mutable working history. Approval snapshots, receipts and feedback are separate durable artifacts.
+If `active_plan.json` is missing or invalid while stored plans still exist, state selection promotes the newest stored plan instead of treating the repository as empty.
+
+Working-plan revision retention remains bounded. Approval snapshots, receipts and feedback are separate durable artifacts.
+
+## Planner job lifecycle
+
+The frontend launches a supervised Hermes planner runner rather than treating a detached PID as success state.
+
+Expected status transitions:
+
+```text
+STARTING → RUNNING → SUCCEEDED
+                   ↘ FAILED
+```
+
+Status records include a run ID, profile, timestamps and final exit code. If a status claims `RUNNING` but its runner PID no longer exists, status recovery converts it to `FAILED`.
+
+The UI must not infer successful plan generation merely because the background process stopped. Success means the supervised runner exited successfully; plan availability is checked separately.
+
+## Runtime SKILL migration
+
+The live editable SKILL intentionally lives in shared runtime state and therefore survives Git updates. On plugin registration, 0.6.0 ensures a mandatory guard is present that supersedes obsolete generation/refresh instructions.
+
+The guard requires:
+
+1. `timesheet_mapping_prepare`;
+2. exactly one mapping decision per returned work item;
+3. exactly one `timesheet_mapping_apply` call;
+4. no legacy plan mutation/reset tools;
+5. no terminal/filesystem/code-execution recovery attempts;
+6. stop and report the exact Clerk error on failure.
+
+## Frontend behaviour
+
+The review UI remains responsible for human review, correction, approval and future deterministic booking. It does not run mapping logic itself.
+
+Without an active plan:
+
+- stored plans are considered before declaring the repository empty;
+- Configuration remains accessible;
+- runtime SKILL remains accessible;
+- State inspection remains accessible;
+- a full week generation/rebuild can be launched through the supervised planner flow.
+
+Planner status uses the 0.6 job lifecycle rather than the legacy PID-only status widget.
 
 ## Update lifecycle
 
-From 0.4.4 onward the normal update is:
+The canonical repository is `bramvrensen/Hermes-Timesheet-Clerk`.
+
+`timesheet_update` remains the intended normal update capability, but during recovery and major-version development the deterministic fallback is:
 
 ```text
-timesheet_update
-  ↓
-git pull --ff-only
-  ↓
-compileall + pytest smoke test
-  ↓
-ensure shared SKILL/profile wiring
-  ↓
-Hermes supervised in-band gateway restart
-  ↓
-fresh process loads new Python plugin/tool registry
+docker exec -i hermes-agent sh -lc '
+cd /home/hermes/.hermes/plugins/timesheet-clerk &&
+git pull --ff-only &&
+grep "^version:" plugin.yaml
+' && \
+docker restart hermes-agent timesheet-clerk-ui
 ```
 
-This intentionally avoids ad-hoc in-process `importlib.reload`, frontend-driven deployment and Docker/container restart.
+This ensures both the Hermes plugin runtime and Streamlit frontend load the same checkout after a major code change.
+
+## Test protection
+
+0.6 adds regression coverage for the architectural boundaries, including:
+
+- plan creation from decisions rather than LLM-authored plan payloads;
+- changed Clockify text refresh;
+- preservation of human-reviewed mappings;
+- failed rebuild preserving the old active plan;
+- absence of destructive/legacy tools from the manifest and plugin surface;
+- supervised planner runner launch;
+- dead-runner failure detection.
+
+GitHub Actions runs `compileall` and the pytest suite on every push to `main`.
 
 ## Remaining write milestone
 
@@ -105,4 +249,4 @@ Still intentionally disabled:
 - idempotent day/week batch execution;
 - post-booking compaction tied to confirmed receipts.
 
-The next write validation should use one approved entry, verify exact payload/response, persist a receipt, then expand to batching.
+The next write validation should use one approved entry, verify the exact Simplicate payload/response, persist a receipt and only then expand to batching.
