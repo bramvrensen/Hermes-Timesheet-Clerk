@@ -2,7 +2,7 @@
 
 Human-in-the-loop timesheet planning and booking for HERMES Agent.
 
-> Status: **0.6.6 deterministic planner.** Clockify/Simplicate reads, decisions-only mapping orchestration, source reconciliation, review UI, deterministic day scheduling, reviewed-entry consolidation, human duration display, service-scoped hour type selection, feedback, approvals, safe week rebuilds and current-week generation are available. Simplicate writes remain deliberately disabled until the booking path is validated.
+> Status: **0.6.7 deterministic planner.** Clockify/Simplicate reads, decisions-only mapping orchestration, source reconciliation, review UI, deterministic day scheduling, reviewed-entry consolidation, human duration display, project-service-scoped hour type selection, feedback, approvals, safe week rebuilds and current-week generation are available. Simplicate writes remain deliberately disabled until the booking path is validated.
 
 See [`docs/DESIGN.md`](docs/DESIGN.md), [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md) and [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md).
 
@@ -25,6 +25,14 @@ timesheet_mapping_apply
 validated + scheduled plan revision
 ```
 
+## 0.6.7 authoritative project-service hour types
+
+0.6.5 correctly stopped offering global hour types, but initially reconstructed service/hour-type relationships indirectly from assignments. That fails for valid project services that have no matching booking assignment in the selected week, such as restored travel-time rows.
+
+0.6.7 uses Simplicate's project service payload as the primary source of truth. `/projects/service` exposes `hour_types[]` for each project service; those nested hour types are normalized directly into the review context. Assignment linkage and explicit masterdata service IDs remain supplementary evidence only.
+
+The persistent review-context cache is versioned in 0.6.7 so an upgrade cannot continue serving the pre-fix scoped data for up to 30 minutes.
+
 ## 0.6.6 reviewed consolidation and human time display
 
 Human review can now consolidate adjacent entries after a correction/restore workflow. Consolidation is deliberately conservative: both rows must be non-ignored, resolved, human-confirmed/corrected, contiguous in planned time, have the exact same booking target and billable state, and represent the same Clockify work context/description. Matching rows are merged into one visible booking block while all underlying `clockify_source_ids` and snapshots remain available for coverage and later splitting.
@@ -37,7 +45,7 @@ Duration presentation no longer uses decimal-hour notation. Review cards, day su
 
 Direct-mapping review treats the Simplicate Task / service as the parent of the Hour type choice.
 
-- selecting a Task / service filters the Hour type dropdown to rows whose `service_id` exactly matches the selected service;
+- selecting a Task / service filters the Hour type dropdown to values valid for that project service;
 - global/unscoped hour types are never offered as a fallback;
 - duplicate hour types are removed by ID;
 - the configured preferred hour type is only prioritized inside the valid scoped set;
