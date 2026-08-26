@@ -1,7 +1,9 @@
 """UI-facing review context built from the shared Simplicate integration layer."""
 from __future__ import annotations
 
+import json
 import os
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -11,6 +13,7 @@ from .runtime import read_config
 from .simplicate import SimplicateClient
 
 _REQUIRED = ("SIMPLICATE_BASE_URL", "SIMPLICATE_API_KEY", "SIMPLICATE_API_SECRET", "SIMPLICATE_EMPLOYEE_ID")
+_CACHE_TTL_SECONDS = 1800
 
 
 def _load_planner_profile_env() -> None:
@@ -34,13 +37,43 @@ def _load_planner_profile_env() -> None:
         os.environ[key] = value
 
 
+def _cache_path(start_date: str, end_date: str) -> Path:
+    root = Path(os.environ.get("TIMESHEET_CLERK_STATE_DIR") or Path.home() / ".hermes" / "timesheet-clerk")
+    return root / "cache" / f"review-context-{start_date}-{end_date}.json"
+
+
+def _read_cache(start_date: str, end_date: str) -> dict[str, list[dict[str, Any]]] | None:
+    path = _cache_path(start_date, end_date)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if time.time() - float(payload.get("fetched_at") or 0) > _CACHE_TTL_SECONDS:
+            return None
+        context = payload.get("context")
+        return context if isinstance(context, dict) else None
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return None
+
+
+def _write_cache(start_date: str, end_date: str, context: dict[str, list[dict[str, Any]]]) -> None:
+    path = _cache_path(start_date, end_date)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps({"fetched_at": time.time(), "context": context}, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(path)
+    except OSError:
+        pass
+
+
 def load_review_context(start_date: str, end_date: str) -> dict[str, list[dict[str, Any]]]:
-    """Load independent Simplicate datasets concurrently for editor use."""
+    """Return cached review context or fetch independent Simplicate data concurrently."""
+    cached = _read_cache(start_date, end_date)
+    if cached is not None:
+        return cached
+
     _load_planner_profile_env()
     config = SimplicateConfig.from_env()
 
-    # SimplicateClient is lightweight. Use one client per worker rather than
-    # sharing a requests/session object across threads.
     def call(method: str, *args: Any) -> Any:
         client = SimplicateClient(config)
         return getattr(client, method)(*args)
@@ -96,7 +129,7 @@ def load_review_context(start_date: str, end_date: str) -> dict[str, list[dict[s
             scoped.append(hour_type)
             seen.add((service_id, hour_type["id"]))
 
-    return {
+    context = {
         "customers": sorted(customers.values(), key=lambda row: _sort_name(row.get("name"))),
         "projects": sorted(projects, key=lambda row: (_sort_name(row.get("customer_name")), _sort_name(row.get("name")))),
         "services": sorted(services, key=lambda row: _sort_name(row.get("name"))),
@@ -104,6 +137,8 @@ def load_review_context(start_date: str, end_date: str) -> dict[str, list[dict[s
         "all_hour_types": sorted(all_hour_types, key=lambda row: _sort_name(row.get("name"))),
         "booking_assignments": sorted(assignments, key=lambda row: _sort_name(row.get("display_label") or row.get("name"))),
     }
+    _write_cache(start_date, end_date, context)
+    return context
 
 
 def _normalize_project(row: dict[str, Any]) -> dict[str, Any]:
