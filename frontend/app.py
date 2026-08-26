@@ -1,4 +1,4 @@
-"""Timesheet Clerk Streamlit shell with fixed in-app navigation."""
+"""Timesheet Clerk Streamlit shell for the 0.6 deterministic planner workflow."""
 from __future__ import annotations
 
 import os
@@ -9,39 +9,96 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 
 import review_app as review
-from timesheet_clerk.runtime import read_config
+import timesheet_clerk.ui_admin as ui_admin
+from timesheet_clerk.state_selection import ensure_active_plan
 from timesheet_clerk.storage import PlanNotFound
 from timesheet_clerk.ui_booking import render_booking
-from timesheet_clerk.ui_sync import clear_sync_status, launch_sync
+from timesheet_clerk.ui_planner import start_planner
+from timesheet_clerk.ui_sync import clear_sync_status, sync_status
 
 
-def _bootstrap_current_week() -> None:
+def _current_week() -> tuple[str, str]:
     tz = ZoneInfo(os.environ.get("TZ") or "Europe/Amsterdam")
     today = datetime.now(tz).date()
     monday = today - timedelta(days=today.weekday())
     sunday = monday + timedelta(days=6)
-    st.info(f"No booking plan exists for the current working state. You can build week {monday} through {sunday} from live sources.")
-    if st.button("Generate current week from scratch", type="primary", use_container_width=True):
-        cfg = read_config()
-        profile = str(cfg.get("planner_profile") or "atlas")
-        prompt = (
-            f"Create a brand-new Timesheet Clerk plan for week {monday} through {sunday}. No working plan currently exists. "
-            "Read timesheet_config_get, timesheet_learning_context, the complete Clockify week, and the Simplicate context/booking assignments required for mapping. "
-            "Map every Clockify row using the normal AUTO/PROPOSE/ASK policy and call timesheet_plan_create exactly once with one complete plan covering every Clockify source. "
-            "Do not use refresh/rebaseline semantics, do not attempt any reset, never manipulate Clerk filesystem state, and never book hours to Simplicate."
-        )
+    return monday.isoformat(), sunday.isoformat()
+
+
+def _render_job_status() -> None:
+    status = sync_status(review.repo.root)
+    if not status:
+        return
+    state = str(status.get("status") or "").upper()
+    message = str(status.get("message") or "")
+    if state in {"STARTING", "RUNNING"}:
+        st.info(message or "Planner running…")
+    elif state == "SUCCEEDED":
+        st.success(message or "Planner finished successfully. Refresh the view to load the new plan state.")
+    elif state == "FAILED":
+        st.error(message or "Planner failed. Existing plan state was preserved.")
+    if state in {"SUCCEEDED", "FAILED"} and st.button("Dismiss planner status", use_container_width=False):
         clear_sync_status(review.repo.root)
-        launch_sync(root=review.repo.root, profile=profile, prompt=prompt, apply_refresh_contract=False)
-        st.success(f"Full current-week generation started via {profile}. Refresh this page when the run finishes.")
+        st.rerun()
+
+
+def _trigger_refresh(plan: dict) -> None:
+    week = plan.get("week") or {}
+    result = start_planner(review.repo.root, str(week["monday"]), str(week["sunday"]), rebuild=False)
+    st.success(f"Planner refresh started · run {result['run_id'][:8]}")
+
+
+def _safe_rebuild_active_week(repo) -> None:
+    st.divider()
+    st.caption("Rebuild week")
+    try:
+        active = ensure_active_plan(repo)
+    except PlanNotFound:
+        st.info("No stored plan is available to rebuild.")
+        return
+    week = active.get("week") or {}
+    monday, sunday = str(week.get("monday") or ""), str(week.get("sunday") or "")
+    st.warning(
+        f"Rebuild {monday} through {sunday} from live sources. The current plan is NOT deleted first; it remains active unless a complete validated replacement succeeds."
+    )
+    confirmed = st.checkbox("I want to rebuild this week from scratch", key=f"rebuild-confirm-{active.get('plan_id')}")
+    if st.button("Rebuild active week", type="primary", disabled=not confirmed, use_container_width=True):
+        result = start_planner(repo.root, monday, sunday, rebuild=True)
+        st.success(f"Safe rebuild started · run {result['run_id'][:8]}. Existing state remains available until replacement succeeds.")
+
+
+def _bootstrap_current_week() -> None:
+    monday, sunday = _current_week()
+    st.info(f"No working plan exists for the current state. Build week {monday} through {sunday} from live sources.")
+    if st.button("Generate current week", type="primary", use_container_width=True):
+        result = start_planner(review.repo.root, monday, sunday, rebuild=True)
+        st.success(f"Current-week generation started · run {result['run_id'][:8]}")
+    _render_job_status()
+
+
+# review_app still owns the mature review surface. Replace only its old planner
+# launch callback; mapping/persistence remain in the 0.6 Python core.
+review._trigger_planner = _trigger_refresh
+ui_admin._fresh_start_active_week = _safe_rebuild_active_week
 
 
 def main() -> None:
     review.require_login()
+
     try:
+        ensure_active_plan(review.repo)
         stored = review._select_plan()
     except PlanNotFound:
         st.markdown("## ⏱️ Timesheet Clerk")
-        _bootstrap_current_week()
+        build_tab, config_tab, skill_tab, state_tab = st.tabs(["Generate", "Configuration", "SKILL", "State"])
+        with build_tab:
+            _bootstrap_current_week()
+        with config_tab:
+            review.render_config(review.repo, review.DEFAULT_SKILL)
+        with skill_tab:
+            review.render_skill(review.repo, review.DEFAULT_SKILL)
+        with state_tab:
+            review.render_state(review.repo, None, {})
         return
 
     try:
@@ -57,6 +114,7 @@ def main() -> None:
     )
     with review_tab:
         review._review_page(stored, plan)
+        _render_job_status()
     with booking_tab:
         render_booking(review.repo, stored["plan_id"])
     with config_tab:
