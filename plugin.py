@@ -1,8 +1,8 @@
-"""HERMES plugin entrypoint for Timesheet Clerk 0.5.14.
+"""HERMES plugin entrypoint for Timesheet Clerk 0.5.17.
 
-0.5.14 keeps the existing workflow, adds deterministic Clockify source hydration
-before plan create/sync, and keeps the separate Streamlit frontend in lockstep
-with plugin updates.
+0.5.17 hardens incremental sync against incomplete planner payload metadata and
+removes destructive Fresh Start from the Hermes planner toolset. Fresh Start is
+now a frontend-only explicit user action.
 """
 from __future__ import annotations
 
@@ -12,21 +12,10 @@ from . import plugin_legacy as _legacy
 from .plugin_legacy import *  # noqa: F401,F403
 from .timesheet_clerk.clockify import ClockifyClient
 from .timesheet_clerk.config import ClockifyConfig
-from .timesheet_clerk.fresh_start import fresh_start_week
 from .timesheet_clerk.source_hydration import assert_live_week_coverage, hydrate_plan_sources
 from .timesheet_clerk.storage import PlanRepository
+from .timesheet_clerk.sync_payload import find_sync_base_plan, normalize_incremental_plan
 from .timesheet_clerk.update_lifecycle import build_update_handler
-
-
-def handle_plan_fresh_start(params: dict[str, Any], **kwargs: Any) -> str:
-    del kwargs
-    return _legacy._safe(
-        lambda: fresh_start_week(
-            PlanRepository(),
-            monday=str(params["monday"]),
-            sunday=str(params["sunday"]),
-        )
-    )
 
 
 def handle_plan_create(params: dict[str, Any], **kwargs: Any) -> str:
@@ -34,7 +23,7 @@ def handle_plan_create(params: dict[str, Any], **kwargs: Any) -> str:
 
     def run() -> dict[str, Any]:
         repo = PlanRepository()
-        incoming = params["plan"]
+        incoming = _legacy.validate_plan(params["plan"])
         start, end = _legacy._clockify_interval_for_plan(incoming)
         sources = ClockifyClient(ClockifyConfig.from_env()).get_time_entries(start, end)
         hydrated = hydrate_plan_sources(incoming, sources, require_full_coverage=True)
@@ -49,8 +38,13 @@ def handle_plan_sync(params: dict[str, Any], **kwargs: Any) -> str:
 
     def run() -> dict[str, Any]:
         repo = PlanRepository()
-        incoming = params["plan"]
-        start, end = _legacy._clockify_interval_for_plan(incoming)
+        raw_incoming = params["plan"]
+        existing = find_sync_base_plan(repo, raw_incoming)
+        incoming = normalize_incremental_plan(existing, raw_incoming)
+
+        # The stored working week is authoritative for the Clockify interval.
+        # Never parse dates from an incomplete LLM delta before normalization.
+        start, end = _legacy._clockify_interval_for_plan(existing)
         sources = ClockifyClient(ClockifyConfig.from_env()).get_time_entries(start, end)
         hydrated = hydrate_plan_sources(incoming, sources, require_full_coverage=False)
         saved = _legacy.sync_week_plan(repo, hydrated)
@@ -68,7 +62,7 @@ handle_update = build_update_handler(_legacy)
 
 def register(ctx) -> None:
     # plugin_legacy.register resolves handler globals at call time. Swap only
-    # the 0.5.14 overrides, leaving all other behavior unchanged.
+    # the safe overrides, leaving all other behavior unchanged.
     original_create = _legacy.handle_plan_create
     original_sync = _legacy.handle_plan_sync
     original_update = _legacy.handle_update
@@ -82,17 +76,5 @@ def register(ctx) -> None:
         _legacy.handle_plan_sync = original_sync
         _legacy.handle_update = original_update
 
-    ctx.register_tool(
-        name="timesheet_plan_fresh_start",
-        toolset=_legacy.TOOLSET,
-        schema=_legacy._schema(
-            "timesheet_plan_fresh_start",
-            "Explicitly discard mutable DRAFT/IN_REVIEW Timesheet Clerk plan state for one exact week so the planner can rebuild and remap the entire week from live sources. Never deletes approvals, receipts, feedback or learned rules.",
-            {
-                "monday": {"type": "string", "description": "Week Monday, YYYY-MM-DD"},
-                "sunday": {"type": "string", "description": "Week Sunday, YYYY-MM-DD"},
-            },
-            ["monday", "sunday"],
-        ),
-        handler=handle_plan_fresh_start,
-    )
+    # Deliberately DO NOT register timesheet_plan_fresh_start here. A background
+    # planner must not have access to a destructive week reset as a recovery step.
