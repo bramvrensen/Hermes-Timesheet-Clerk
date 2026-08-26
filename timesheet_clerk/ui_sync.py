@@ -1,8 +1,8 @@
 """Background planner-sync status shared with the Streamlit frontend.
 
 The frontend is deliberately transport-only: it never reads Clockify or Simplicate
-credentials. Source probing and delta calculation belong to Timesheet Clerk tools,
-which execute inside the Hermes plugin runtime where provider credentials exist.
+credentials. Source probing, coverage repair and mapping belong to Timesheet Clerk
+tools executed inside the Hermes plugin runtime.
 """
 from __future__ import annotations
 
@@ -15,12 +15,17 @@ from typing import Any
 
 
 def _upgrade_sync_prompt(prompt: str) -> str:
-    """Keep older frontend refresh prompts compatible with deterministic coverage repair."""
+    """Keep frontend refresh prompts aligned with the complete sync workflow."""
     prompt += (
-        " IMPORTANT: if timesheet_sync_probe reports source_delta.unprocessed_count > 0, "
-        "do NOT construct or call timesheet_plan_sync. Call timesheet_source_rebaseline for the same interval instead. "
-        "That operation deterministically restores working-plan coverage for every baseline Clockify source as unresolved ASK entries. "
-        "After it succeeds, stop and report its deterministic summary. Mapping can happen in a later review/planning pass."
+        " IMPORTANT REFRESH CONTRACT: if timesheet_sync_probe reports source_delta.unprocessed_count > 0, "
+        "first call timesheet_source_rebaseline for the same interval to deterministically restore plan coverage. "
+        "Do NOT stop after coverage repair. Then call timesheet_plan_active and map ONLY entries that were created by "
+        "that repair and remain unresolved ASK entries; preserve all previously reviewed/mapped entries unchanged. "
+        "For those repaired ASK entries, load timesheet_config_get, timesheet_learning_context and only the Simplicate "
+        "assignment/context data needed to apply the same AUTO/PROPOSE/ASK mapping policy used for initial plan generation. "
+        "After mapping those repaired entries, call timesheet_plan_sync with the complete active plan, preserving canonical "
+        "Clockify source IDs/snapshots and every existing human review value. Never book hours to Simplicate during refresh. "
+        "If no repaired ASK entries require mapping, stop with the deterministic summary."
     )
     return prompt
 
