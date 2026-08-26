@@ -3,7 +3,7 @@ name: timesheet-clerk
 description: Prepare a reviewable weekly timesheet booking plan from Clockify and Simplicate. Use when planning, checking, reconciling or preparing hours for Simplicate.
 ---
 
-# Timesheet Clerk 0.6
+# Timesheet Clerk 0.6.1
 
 ## Core contract
 Timesheet Clerk owns plan structure and state. HERMES owns mapping decisions only.
@@ -19,7 +19,17 @@ Never construct, edit, serialize or infer a booking-plan JSON object. Never use 
 6. Call `timesheet_mapping_apply` once with the complete decisions array and `rebuild=false`.
 7. Present the deterministic summary returned by the tool.
 
-Python owns Clockify source fidelity, source-change detection, plan/week identity, revisioning, merge behaviour, preservation of human review and persistence.
+The rebuild flag is fixed for the entire run. A normal refresh must never retry, recover or escalate with `rebuild=true`. If an error says an explicit rebuild is required, stop and ask/report that requirement. Only a new explicit user action/request may start a rebuild.
+
+Python owns Clockify source fidelity, source-change detection, removed-source reconciliation, plan/week identity, revisioning, merge behaviour, preservation of human review and persistence.
+
+## Removed Clockify sources
+A source ID referenced by the current plan but absent from the live Clockify week is treated as removed even when an older snapshot baseline no longer contains that ID.
+
+- A normal one-source plan row whose Clockify source disappeared is removed deterministically during refresh.
+- A legacy consolidated row whose entire source bundle disappeared may also be removed deterministically.
+- If only part of a legacy consolidated source bundle disappeared, Python refuses to guess how to split the historic row and returns `requires_explicit_rebuild`.
+- `requires_explicit_rebuild` is not permission for HERMES to retry with `rebuild=true`; it requires a new explicit user rebuild action.
 
 ## Safe rebuild
 A rebuild is allowed only after an explicit user action from the Timesheet Clerk frontend or an explicit user request.
