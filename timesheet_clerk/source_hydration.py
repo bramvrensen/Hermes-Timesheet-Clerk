@@ -15,13 +15,22 @@ from .sync import covered_source_ids
 _SOURCE_KEYS = ("description", "client", "project", "tags", "start", "end", "duration_seconds")
 
 
-def hydrate_plan_sources(plan: dict[str, Any], clockify_entries: list[dict[str, Any]]) -> dict[str, Any]:
-    """Return a copy whose entries carry canonical Clockify source facts.
+def hydrate_plan_sources(
+    plan: dict[str, Any],
+    clockify_entries: list[dict[str, Any]],
+    *,
+    require_full_coverage: bool = True,
+) -> dict[str, Any]:
+    """Return a copy whose supplied entries carry canonical Clockify source facts.
 
     A one-source plan row gets the complete normalized Clockify source bundle.
     Multi-source rows retain their planner-facing aggregate label but receive
     ``source_bundles`` with every canonical source and a summed original duration.
     Every referenced Clockify ID must exist in the supplied live source interval.
+
+    Initial plan creation requires full live-week coverage. Incremental sync may
+    hydrate only the delta payload; final coverage is enforced after merge before
+    the new Clockify baseline is persisted.
     """
     result = deepcopy(plan)
     by_id = {str(row.get("id")): row for row in clockify_entries if row.get("id")}
@@ -43,8 +52,6 @@ def hydrate_plan_sources(plan: dict[str, Any], clockify_entries: list[dict[str, 
         else:
             entry["source_bundles"] = deepcopy(bundles)
             entry["original_duration_seconds"] = sum(float(row.get("duration_seconds") or 0) for row in bundles)
-            # Preserve an aggregate planner label when present. If absent, provide
-            # a deterministic source object rather than leaving the UI empty.
             if not isinstance(entry.get("source"), dict):
                 entry["source"] = {
                     "description": " + ".join(str(row.get("description") or "") for row in bundles).strip(" +"),
@@ -56,12 +63,21 @@ def hydrate_plan_sources(plan: dict[str, Any], clockify_entries: list[dict[str, 
                     "duration_seconds": entry["original_duration_seconds"],
                 }
 
-    incoming_ids = set(by_id)
-    covered = covered_source_ids(result)
-    omitted = sorted(incoming_ids - covered)
-    if omitted:
-        raise StateConflict("plan does not cover all Clockify sources in the live week: " + ", ".join(omitted))
+    if require_full_coverage:
+        live_ids = set(by_id)
+        covered = covered_source_ids(result)
+        omitted = sorted(live_ids - covered)
+        if omitted:
+            raise StateConflict("plan does not cover all Clockify sources in the live week: " + ", ".join(omitted))
     return result
+
+
+def assert_live_week_coverage(plan: dict[str, Any], clockify_entries: list[dict[str, Any]]) -> None:
+    """Refuse to advance the source baseline when working-plan coverage is incomplete."""
+    live_ids = {str(row.get("id")) for row in clockify_entries if row.get("id")}
+    omitted = sorted(live_ids - covered_source_ids(plan))
+    if omitted:
+        raise StateConflict("refusing to persist Clockify baseline; working plan omits source(s): " + ", ".join(omitted))
 
 
 def _canonical_source(row: dict[str, Any]) -> dict[str, Any]:
