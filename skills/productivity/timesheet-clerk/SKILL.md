@@ -16,8 +16,8 @@ For every refresh of an existing week, call `timesheet_sync_probe` first.
 
 - If `has_changes` is false, stop immediately. Do not load Simplicate context, learning context, Clockify again or the full active plan. Report only the deterministic summary returned by the probe.
 - If `source_delta.requires_rebaseline` is true, call `timesheet_source_rebaseline` for the same interval. This refreshes immutable Clockify snapshots and preserves human review.
-- If `source_delta.unprocessed_count > 0`, do not construct or call `timesheet_plan_sync`. Call `timesheet_source_rebaseline` for the same interval. Baseline persistence enforces plan coverage and deterministically creates unresolved ASK entries for every Clockify source that is not yet represented in the working plan. Stop after that repair and report its deterministic summary. Mapping happens in a later review/planning pass.
-- Only when coverage is complete should changed/new rows proceed through mapping and `timesheet_plan_sync`.
+- If `source_delta.unprocessed_count > 0`, first call `timesheet_source_rebaseline` for the same interval. Baseline persistence enforces plan coverage and deterministically creates unresolved ASK entries for every Clockify source not yet represented in the working plan. Then continue in the same refresh: read the active plan and map only those newly repaired ASK entries using the normal mapping workflow below. Preserve all older reviewed/mapped entries unchanged. Persist the enriched plan through `timesheet_plan_sync`.
+- Only repaired/new/changed entries may be remapped during refresh. Existing human-reviewed entries are immutable input to that refresh unless their own Clockify source changed.
 - Missing source IDs must be surfaced and reconciled, never silently deleted.
 
 ## Clockify source fidelity
@@ -34,13 +34,14 @@ Every normalized Clockify row is an immutable source bundle. Keep its ID, descri
 2. Repair legacy baseline or missing plan coverage first when required.
 3. Read `timesheet_config_get` and `timesheet_plan_active` only when mapping decisions are actually needed.
 4. Read `timesheet_learning_context` only when mapping decisions are required.
-5. Map only new/changed rows after plan coverage is complete.
+5. Identify only the repaired/new/changed entries that require mapping. Do not remap unrelated existing entries.
 6. Read only the Simplicate planned assignments, booking candidates and booked hours needed for those rows.
-7. Reconcile booked work.
-8. Prefer valid planned assignments when policy allows.
-9. Fall back to direct customer → project → task/service → hour type when no suitable assignment exists.
-10. Persist mapping changes through `timesheet_plan_sync`.
-11. Never book during generation or sync.
+7. Apply the same AUTO, PROPOSE and ASK policy used during initial plan generation. A coverage-repaired entry is ASK only as a safe ingestion default, not evidence that it must remain ASK.
+8. Reconcile booked work.
+9. Prefer valid planned assignments when policy allows.
+10. Fall back to direct customer → project → task/service → hour type when no suitable assignment exists.
+11. Persist mapping changes through `timesheet_plan_sync` using the complete active plan while preserving existing human review state and canonical Clockify source data.
+12. Never book during generation or sync.
 
 ## Deterministic summaries
 Use the summary returned by `timesheet_sync_probe`, `timesheet_plan_sync` or `timesheet_plan_summary` for all counts and totals. These values are authoritative. Do not recount ignored entries or recalculate hours in the LLM response.
