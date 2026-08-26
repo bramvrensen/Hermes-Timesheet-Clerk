@@ -17,6 +17,7 @@ def planner_prompt(monday: str, sunday: str, *, rebuild: bool) -> str:
         "If no_op is true, stop and report its deterministic summary. Otherwise load timesheet_config_get, timesheet_learning_context and only the Simplicate context needed to decide those work_items. "
         "For every work_item return exactly one mapping decision keyed by source_id with tier AUTO/PROPOSE/ASK, booking_mode assignment/direct, the selected assignment or direct_mapping when available, ignored flag when appropriate, why, why_not_auto, confidence and mapping_source. "
         f"Then call timesheet_mapping_apply exactly once with the same week, rebuild={str(rebuild).lower()}, and the complete decisions array. "
+        "The rebuild flag is immutable for this planner run. In particular, a refresh started with rebuild=false must NEVER retry or escalate to rebuild=true after an error; an explicit user action is required to start a rebuild. "
         "Python owns plan IDs, week metadata, Clockify source facts, durations, revisioning, merge behaviour, human-review preservation and persistence. "
         "Never call terminal, execute_code, filesystem tools or generic file tools for Timesheet Clerk state. Never delete/reset a plan and never book hours to Simplicate. "
         "If a Timesheet Clerk tool fails, stop immediately and report the exact error; do not invent a recovery strategy."
