@@ -7,6 +7,7 @@ from typing import Any
 
 import streamlit as st
 
+from .fresh_start import fresh_start_week
 from .runtime import (
     purge_expired_artifacts,
     read_config,
@@ -15,7 +16,8 @@ from .runtime import (
     write_config,
     write_runtime_skill,
 )
-from .storage import PlanRepository, repair_shared_permissions
+from .storage import PlanNotFound, PlanRepository, StateConflict, repair_shared_permissions
+from .ui_sync import clear_sync_status, launch_sync
 
 
 _PLUGIN_ROOT = Path(__file__).resolve().parents[1]
@@ -33,6 +35,52 @@ def _installed_version() -> str:
     except OSError:
         pass
     return "unknown"
+
+
+def _fresh_start_active_week(repo: PlanRepository) -> None:
+    """Render an explicit destructive reset guarded by a human UI confirmation."""
+    st.divider()
+    st.caption("Fresh Start")
+    try:
+        active = repo.get_active()
+    except PlanNotFound:
+        st.info("No active working plan to reset.")
+        return
+
+    week = active.get("week") or {}
+    monday = str(week.get("monday") or "")
+    sunday = str(week.get("sunday") or "")
+    if not monday or not sunday:
+        st.error("Active plan has no valid week boundaries; Fresh Start is unavailable.")
+        return
+
+    st.warning(
+        f"Fresh Start permanently discards the mutable working plan for {monday} through {sunday}, "
+        "then launches a complete rebuild from live Clockify and Simplicate data. Approvals, receipts, feedback and learned rules are preserved."
+    )
+    confirmed = st.checkbox(
+        "I understand that the current mutable working plan will be deleted",
+        key=f"fresh-start-confirm-{active.get('plan_id')}",
+    )
+    if st.button("Fresh start active week", type="primary", disabled=not confirmed, use_container_width=True):
+        try:
+            result = fresh_start_week(repo, monday=monday, sunday=sunday)
+            cfg = read_config()
+            profile = str(cfg.get("planner_profile") or "atlas")
+            prompt = (
+                f"The user explicitly requested a Fresh Start for Timesheet Clerk week {monday} through {sunday}. "
+                "The old mutable plan has already been deleted by the frontend. Rebuild the ENTIRE week from live sources. "
+                "Load timesheet_config_get, timesheet_learning_context, timesheet_clockify_entries for the full week, and the Simplicate context/booking assignments needed for mapping. "
+                "Create exactly one complete plan covering every Clockify source with timesheet_plan_create. Apply the normal AUTO/PROPOSE/ASK policy. "
+                "Do not attempt any further reset or filesystem manipulation. Never book hours to Simplicate."
+            )
+            clear_sync_status(repo.root)
+            launch_sync(root=repo.root, profile=profile, prompt=prompt)
+            st.success(
+                f"Fresh Start removed {len(result.get('removed_plan_ids') or [])} working plan(s). Full rebuild started via {profile}."
+            )
+        except (StateConflict, OSError, ValueError) as exc:
+            st.error(f"Fresh Start failed: {exc}")
 
 
 def render_config(repo: PlanRepository, default_skill: Path) -> None:
@@ -99,6 +147,8 @@ def render_config(repo: PlanRepository, default_skill: Path) -> None:
         marker.write_text("restart\n", encoding="utf-8")
         st.success("Frontend restart requested. The managed launcher will restart Streamlit within a few seconds.")
     st.caption("Plugin updates are driven by the Hermes-native `timesheet_update` tool. The displayed version is read directly from the installed plugin manifest.")
+
+    _fresh_start_active_week(repo)
 
 
 def render_skill(repo: PlanRepository, default_skill: Path) -> None:
