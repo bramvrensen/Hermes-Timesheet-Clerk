@@ -39,7 +39,7 @@ def _load_planner_profile_env() -> None:
 
 def _cache_path(start_date: str, end_date: str) -> Path:
     root = Path(os.environ.get("TIMESHEET_CLERK_STATE_DIR") or Path.home() / ".hermes" / "timesheet-clerk")
-    return root / "cache" / f"review-context-{start_date}-{end_date}.json"
+    return root / "cache" / f"review-context-v067-{start_date}-{end_date}.json"
 
 
 def _read_cache(start_date: str, end_date: str) -> dict[str, list[dict[str, Any]]] | None:
@@ -109,8 +109,6 @@ def load_review_context(start_date: str, end_date: str) -> dict[str, list[dict[s
         if project.get("customer_id"):
             customers.setdefault(project["customer_id"], {"id": project["customer_id"], "name": project.get("customer_name") or project["customer_id"]})
 
-    # Simplicate project services are the primary source of truth for valid hour
-    # types. GET /projects/service exposes hour_types[] on the service itself.
     scoped: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
     for service in services:
@@ -131,8 +129,6 @@ def load_review_context(start_date: str, end_date: str) -> dict[str, list[dict[s
                 "source": "project_service",
             })
 
-    # Assignment linkage remains useful supporting evidence for tenants/records
-    # where older service payloads omit hour_types, but it is no longer primary.
     for assignment in assignments:
         task = assignment.get("task") or {}
         hour_type = assignment.get("hour_type") or {}
@@ -146,7 +142,6 @@ def load_review_context(start_date: str, end_date: str) -> dict[str, list[dict[s
         seen.add(key)
         scoped.append({"id": hour_type_id, "name": _nested_name(hour_type) or hour_type_names.get(hour_type_id) or hour_type_id, "service_id": service_id, "source": "assignment"})
 
-    # Last-resort explicit relation from hour-type masterdata, if present.
     for hour_type in hour_types:
         service_id = hour_type.get("service_id")
         if service_id and (service_id, hour_type["id"]) not in seen:
