@@ -13,6 +13,8 @@ from zoneinfo import ZoneInfo
 
 from .sync import covered_source_ids
 
+PENDING_MAPPING_REASON = "Clockify source ingested; Simplicate mapping still requires resolution."
+
 
 def ensure_source_coverage(
     plan: dict[str, Any],
@@ -53,7 +55,9 @@ def ensure_source_coverage(
             "booking_mode": "direct",
             "direct_mapping": {},
             "tier": "ASK",
-            "why_not_auto": "Clockify source ingested; Simplicate mapping still requires resolution.",
+            "mapping_state": "PENDING",
+            "mapping_origin": "coverage_repair",
+            "why_not_auto": PENDING_MAPPING_REASON,
         })
         covered.add(source_id)
         added.append(source_id)
@@ -66,6 +70,16 @@ def ensure_source_coverage(
     if added:
         result["status"] = "IN_REVIEW"
     return result, added
+
+
+def is_pending_mapping(entry: dict[str, Any]) -> bool:
+    """Recognize both new markers and pre-0.5.12 coverage-repair entries."""
+    if entry.get("mapping_state") == "PENDING":
+        return True
+    return (
+        (entry.get("tier") or entry.get("overall_tier")) == "ASK"
+        and str(entry.get("why_not_auto") or "") == PENDING_MAPPING_REASON
+    )
 
 
 def _local_date(value: Any, tz: ZoneInfo) -> str:
