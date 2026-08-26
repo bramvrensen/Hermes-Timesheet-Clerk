@@ -7,6 +7,7 @@ import uuid
 from copy import deepcopy
 from typing import Any
 
+from .consolidation import consolidate_reviewed_entries
 from .contracts import utc_now, validate_plan
 from .scheduling import reflow_plan_days
 
@@ -62,7 +63,7 @@ def _target_complete(entry: dict[str, Any]) -> bool:
 
 
 def apply_review(plan: dict[str, Any], entry_id: str, reviewed_values: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
-    """Apply one human edit, repair review state, then reflow all affected days."""
+    """Apply one human edit, repair state, reflow, then consolidate safe peers."""
     updated = deepcopy(plan)
     index = next((i for i, row in enumerate(updated["entries"]) if row.get("entry_id") == entry_id), None)
     if index is None:
@@ -80,9 +81,6 @@ def apply_review(plan: dict[str, Any], entry_id: str, reviewed_values: dict[str,
     if entry.get("ignored"):
         entry["review_state"] = "skipped"
     elif restoring and not _target_complete(entry):
-        # Ignored rows intentionally have no booking target. Restoring one must
-        # therefore reopen mapping review rather than resurrect an AUTO/resolved
-        # entry with an empty direct mapping.
         entry["tier"] = "ASK"
         entry["overall_tier"] = "ASK"
         entry["mapping_state"] = "PENDING"
@@ -101,6 +99,7 @@ def apply_review(plan: dict[str, Any], entry_id: str, reviewed_values: dict[str,
 
     updated["status"] = "IN_REVIEW"
     updated = reflow_plan_days(updated)
+    updated = consolidate_reviewed_entries(updated, preferred_entry_id=entry_id)
     reviewed = next(row for row in updated["entries"] if row.get("entry_id") == entry_id)
     return updated, original, deepcopy(reviewed)
 
@@ -138,6 +137,8 @@ def split_consolidated_entry(plan: dict[str, Any], entry_id: str) -> dict[str, A
         row["overall_tier"] = "PROPOSE"
         row["split_from_entry_id"] = entry_id
         row["source_fingerprint"] = source_fingerprint(row)
+        row.pop("consolidated", None)
+        row.pop("consolidated_entry_ids", None)
         split.append(row)
 
     updated["entries"][index:index + 1] = split
