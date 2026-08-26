@@ -1,5 +1,3 @@
-import json
-
 import pytest
 
 from timesheet_clerk.fresh_start import fresh_start_week
@@ -8,6 +6,7 @@ from timesheet_clerk.storage import PlanRepository, StateConflict
 
 def _plan(plan_id: str, status: str = "IN_REVIEW"):
     return {
+        "schema_version": 1,
         "plan_id": plan_id,
         "revision": 1,
         "status": status,
@@ -39,9 +38,7 @@ def test_fresh_start_removes_only_mutable_week_and_clears_active(tmp_path):
 
 def test_fresh_start_refuses_non_working_week(tmp_path):
     repo = PlanRepository(tmp_path)
-    plan = _plan("approved", status="APPROVED")
-    # write directly because repository creation accepts a valid immutable status
-    repo.create(plan, make_active=True)
+    repo.create(_plan("approved", status="APPROVED"), make_active=True)
 
     with pytest.raises(StateConflict, match="fresh start refused"):
         fresh_start_week(repo, monday="2026-08-24", sunday="2026-08-30")
