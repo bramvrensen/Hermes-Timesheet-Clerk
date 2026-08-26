@@ -1,5 +1,5 @@
 name: timesheet-clerk
-version: 0.6.4
+version: 0.6.5
 description: HERMES Timesheet Clerk tools, deterministic plan state and review workflow for Clockify/Simplicate.
 author: Bram van Rensen
 homepage: https://github.com/bramvrensen/Hermes-Timesheet-Clerk
