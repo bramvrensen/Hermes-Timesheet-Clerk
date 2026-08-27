@@ -1,5 +1,19 @@
 # Simplicate booking
 
+## 0.7.7 project-service hour type relation IDs
+
+`GET /projects/service` exposes `hour_types[]` as relation objects. The relation's own `id` is not a valid Simplicate hours `type_id`. The actual hour type is nested below the relation:
+
+```text
+service.hour_types[].hourstype.id
+```
+
+Earlier review-context normalization used `service.hour_types[].id`, so the UI could show the correct Hour Type name while persisting the project-service/hour-type relation ID. Prefix normalization cannot repair that semantic mismatch, and `POST /hours/hours` correctly responds with `Type is required`.
+
+0.7.7 now scopes editor Hour Types using the nested `hourstype.id` and nested name. The persistent review-context cache key is bumped to `v077` so stale relation IDs are not reused after upgrade.
+
+Existing reviewed direct mappings created before 0.7.7 may still contain the old relation ID. Open the entry after upgrading, select the Hour Type from the freshly loaded scoped list and save the entry once before booking. Newly saved mappings will contain the real hour type ID.
+
 ## 0.7.6 authoritative Simplicate hours write contract
 
 The live `POST /hours/hours` transport is field-specific. Timesheet Clerk no longer applies one generic ID-prefix rule to all booking fields.
