@@ -1,5 +1,13 @@
 # Simplicate booking
 
+## 0.7.2 shared Simplicate configuration
+
+The Streamlit review frontend and the Hermes planner runtime do not necessarily inherit the same process environment. Booking therefore uses the same shared configuration resolver as the rest of Timesheet Clerk.
+
+`SimplicateConfig.from_env()` now first preserves any integration variables already present in the process and then fills only missing Clockify/Simplicate integration values from the configured planner profile `.env` (normally `/home/hermes/.hermes/profiles/atlas/.env`). No second set of booking credentials is introduced.
+
+This means Simplicate review reads and live task writes use the same source configuration, including `SIMPLICATE_BASE_URL`, API key/secret and employee ID.
+
 ## 0.7.0 validation phase
 
 0.7.0 introduces the first live Simplicate write path. Live writes are deliberately enabled only for a single persisted task from the Review dialog.
