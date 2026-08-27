@@ -13,7 +13,7 @@ import timesheet_clerk.ui_admin as ui_admin
 from timesheet_clerk.state_selection import ensure_active_plan, has_working_week
 from timesheet_clerk.storage import PlanNotFound
 from timesheet_clerk.ui_booking import render_booking
-from timesheet_clerk.ui_choices import hour_types_for_service
+from timesheet_clerk.ui_choices import editor_hour_type_choices
 from timesheet_clerk.ui_planner import start_planner
 from timesheet_clerk.ui_sync import clear_sync_status, sync_status
 from timesheet_clerk.ui_time import install_review_time_formatting
@@ -98,16 +98,25 @@ def _direct_editor_scoped(plan: dict, entry: dict) -> dict:
     services = [row for row in ctx.get("services") or [] if not project_id or not row.get("project_id") or review._plain_id(row.get("project_id")) == project_id]
     service = review._select_row("Task / service", services, mapping.get("service_id") or "", f"s-{entry['entry_id']}")
     service_id = review._plain_id(service)
-    hour_types = hour_types_for_service(ctx, service_id)
+
+    hour_types, preserved_current = editor_hour_type_choices(
+        ctx,
+        service_id,
+        current_service_id=mapping.get("service_id"),
+        current_hour_type_id=mapping.get("hour_type_id"),
+        current_hour_type_name=mapping.get("hour_type_name"),
+    )
     preferred = str(review.read_config().get("preferred_hour_type") or "").casefold()
     if preferred:
         hour_types.sort(key=lambda row: (0 if review._name(row).casefold() == preferred else 1, review._name(row).casefold()))
+
     current_hour_type = mapping.get("hour_type_id") or ""
-    if service_id and not hour_types:
+    if preserved_current:
+        st.warning("The saved Hour type could not be re-verified from the current Simplicate service context. It is preserved so opening the editor does not erase an existing mapping. Choose another value only if you want to change it.")
+    elif service_id and not hour_types:
         st.warning("No valid hour types are available for the selected Task / service.")
-        hour_type = None
-    else:
-        hour_type = review._select_row("Hour type", hour_types, current_hour_type, f"h-{entry['entry_id']}")
+
+    hour_type = review._select_row("Hour type", hour_types, current_hour_type, f"h-{entry['entry_id']}") if hour_types else None
     return {
         "customer_id": customer_id or None,
         "customer_name": review._name(customer) if customer else None,
