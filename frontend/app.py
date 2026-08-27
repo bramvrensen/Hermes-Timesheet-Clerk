@@ -1,4 +1,4 @@
-"""Timesheet Clerk Streamlit shell for the 0.6 deterministic planner workflow."""
+"""Timesheet Clerk Streamlit shell for the deterministic planner workflow."""
 from __future__ import annotations
 
 import os
@@ -15,6 +15,7 @@ from timesheet_clerk.storage import PlanNotFound
 from timesheet_clerk.ui_booking import render_booking
 from timesheet_clerk.ui_choices import editor_hour_type_choices
 from timesheet_clerk.ui_planner import start_planner
+from timesheet_clerk.ui_single_booking import render_task_booking
 from timesheet_clerk.ui_sync import clear_sync_status, sync_status
 from timesheet_clerk.ui_time import install_review_time_formatting
 
@@ -130,15 +131,26 @@ def _direct_editor_scoped(plan: dict, entry: dict) -> dict:
     }
 
 
+_original_editor = review._editor
+
+
+def _editor_with_task_booking(plan: dict, entry: dict) -> None:
+    _original_editor(plan, entry)
+    render_task_booking(review.repo, plan, entry)
+
+
 review._trigger_planner = _trigger_refresh
 review._sync_status_widget = lambda: None
 review._direct_editor = _direct_editor_scoped
+review._editor = _editor_with_task_booking
 install_review_time_formatting(review)
 ui_admin._fresh_start_active_week = _safe_rebuild_active_week
 
 
 def main() -> None:
     review.require_login()
+    if st.session_state.pop("booking_flash", None):
+        st.success("Task booked and verified in Simplicate")
     try:
         ensure_active_plan(review.repo)
         stored = review._select_plan()
