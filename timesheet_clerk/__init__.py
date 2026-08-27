@@ -7,7 +7,7 @@ import shutil
 import sys
 from pathlib import Path
 
-__version__ = "0.7.8"
+__version__ = "0.7.9"
 
 os.environ.setdefault("TIMESHEET_CLERK_REVISION_RETENTION", "2")
 
