@@ -39,7 +39,7 @@ def _load_planner_profile_env() -> None:
 
 def _cache_path(start_date: str, end_date: str) -> Path:
     root = Path(os.environ.get("TIMESHEET_CLERK_STATE_DIR") or Path.home() / ".hermes" / "timesheet-clerk")
-    return root / "cache" / f"review-context-v067-{start_date}-{end_date}.json"
+    return root / "cache" / f"review-context-v077-{start_date}-{end_date}.json"
 
 
 def _read_cache(start_date: str, end_date: str) -> dict[str, list[dict[str, Any]]] | None:
@@ -66,7 +66,6 @@ def _write_cache(start_date: str, end_date: str, context: dict[str, list[dict[st
 
 
 def load_review_context(start_date: str, end_date: str) -> dict[str, list[dict[str, Any]]]:
-    """Return cached review context or fetch independent Simplicate data concurrently."""
     cached = _read_cache(start_date, end_date)
     if cached is not None:
         return cached
@@ -113,8 +112,11 @@ def load_review_context(start_date: str, end_date: str) -> dict[str, list[dict[s
     seen: set[tuple[str, str]] = set()
     for service in services:
         service_id = str(service.get("id") or "")
-        for hour_type in service.get("hour_types") or []:
-            hour_type_id = _plain_id(_nested_id(hour_type) or (hour_type.get("hourtype_id") if isinstance(hour_type, dict) else None))
+        for relation in service.get("hour_types") or []:
+            if not isinstance(relation, dict):
+                continue
+            actual = relation.get("hourstype") or relation.get("hour_type") or relation.get("type") or {}
+            hour_type_id = _plain_id(_nested_id(actual) or relation.get("hourstype_id") or relation.get("hourtype_id"))
             if not service_id or not hour_type_id:
                 continue
             key = (service_id, hour_type_id)
@@ -123,14 +125,14 @@ def load_review_context(start_date: str, end_date: str) -> dict[str, list[dict[s
             seen.add(key)
             scoped.append({
                 "id": hour_type_id,
-                "name": _nested_name(hour_type) or hour_type_names.get(hour_type_id) or hour_type_id,
+                "name": _nested_name(actual) or relation.get("name") or hour_type_names.get(hour_type_id) or hour_type_id,
                 "service_id": service_id,
-                "billable": hour_type.get("billable") if isinstance(hour_type, dict) else None,
+                "billable": relation.get("billable"),
                 "source": "project_service",
             })
 
     for assignment in assignments:
-        task = assignment.get("task") or {}
+        task = assignment.get("task") or assignment.get("projectservice") or {}
         hour_type = assignment.get("hour_type") or {}
         service_id = _plain_id(_nested_id(task))
         hour_type_id = _plain_id(_nested_id(hour_type))
