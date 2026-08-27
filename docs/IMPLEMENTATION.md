@@ -2,6 +2,28 @@
 
 `DESIGN.md` is the functional source of truth. Deployment details live in `DEPLOYMENT.md`.
 
+## 0.6.8 non-destructive persisted Hour Type handling
+
+0.6.8 fixes a second Save-disabled path in the direct mapping editor. A restored entry can already contain a complete persisted direct mapping while the current Simplicate review context fails to re-hydrate the selected service/hour-type relation. The 0.6.7 editor treated that context gap as `hour_type=None`, which silently removed `hour_type_id` from the staged mapping and made `_target_complete()` disable `Save changes`.
+
+The editor now distinguishes existing persisted state from new selectable state:
+
+```text
+same selected service + persisted hour_type_id
+    + scoped context cannot verify that hour type
+        → preserve existing hour type
+        → warn that scope is currently unverified
+        → keep mapping complete/saveable
+
+service changed
+        → do not carry old hour type across
+        → require a newly scoped hour type
+```
+
+New Hour Type choices remain strictly service-scoped. There is still no global fallback. This is a non-destructive UI rule, not a weakening of the mapping contract: opening the editor may not erase a previously stored booking target because an API/cache/context lookup is incomplete.
+
+Regression coverage verifies both preservation on the same service and rejection of carrying an old hour type to a different service.
+
 ## 0.6.7 authoritative project-service hour type scoping
 
 0.6.7 fixes a false-negative in the 0.6.5 Hour type filter. The filter itself was correct, but the review context derived most service/hour-type relationships indirectly from booking assignments. A valid project service without a matching assignment in the selected week could therefore appear to have no valid hour types and disable Save in the review dialog.
