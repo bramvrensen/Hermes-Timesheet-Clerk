@@ -1,10 +1,18 @@
 # Simplicate booking
 
+## 0.7.3 booking-target normalization
+
+The working-plan contract stores direct mappings canonically as `project_id`, `service_id` and `hour_type_id`, while older plans and Simplicate-shaped data may expose equivalent values as `projectservice_id`, `type_id` or nested `project`, `projectservice`/`service`, and `hour_type`/`type` objects.
+
+Single-task booking normalizes these representations before validating the target and constructing the Simplicate POST. Canonical working-plan fields always win when both representations exist. This compatibility layer is intentionally inside the booking boundary: persisted reviewed state is not silently rewritten merely to satisfy transport naming.
+
+A human-readable target shown in the review card is not sufficient evidence by itself. The booking boundary still requires real IDs for project, project service and hour type after normalization before any POST is attempted.
+
 ## 0.7.2 shared Simplicate configuration
 
 The Streamlit review frontend and the Hermes planner runtime do not necessarily inherit the same process environment. Booking therefore uses the same shared configuration resolver as the rest of Timesheet Clerk.
 
-`SimplicateConfig.from_env()` now first preserves any integration variables already present in the process and then fills only missing Clockify/Simplicate integration values from the configured planner profile `.env` (normally `/home/hermes/.hermes/profiles/atlas/.env`). No second set of booking credentials is introduced.
+`SimplicateConfig.from_env()` first preserves any integration variables already present in the process and then fills only missing Clockify/Simplicate integration values from the configured planner profile `.env` (normally `/home/hermes/.hermes/profiles/atlas/.env`). No second set of booking credentials is introduced.
 
 This means Simplicate review reads and live task writes use the same source configuration, including `SIMPLICATE_BASE_URL`, API key/secret and employee ID.
 
