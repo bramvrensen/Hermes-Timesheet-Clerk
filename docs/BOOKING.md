@@ -1,5 +1,17 @@
 # Simplicate booking
 
+## 0.7.5 safe Simplicate rejection diagnostics
+
+Simplicate validation failures already arrive in the shared HTTP layer as an `IntegrationError` containing the HTTP status and parsed response details. Earlier booking UI reduced that to the generic exception string `External API rejected the request`, hiding the useful reason.
+
+The single-task booking UI now shows the safe diagnostic surface for rejected requests:
+
+- the Clerk error message;
+- HTTP status code when available;
+- parsed Simplicate response details, capped at 4000 characters.
+
+Authentication headers, API keys, API secrets and request headers are never included in this display. A rejected POST does not write a Clerk receipt because receipts are created only after `_post_hours` returns successfully.
+
 ## 0.7.4 inline confirmation inside Review
 
 The Review entry editor is already a Streamlit dialog. Streamlit does not allow one `st.dialog` to open another `st.dialog`, so task booking confirmation is rendered inline inside the existing Review dialog.
@@ -46,7 +58,7 @@ Visible controls:
 - `Book day`: visible but disabled during single-task validation;
 - `Book week`: visible but disabled during single-task validation.
 
-The user never has to inspect raw Simplicate JSON payloads. The inline confirmation surface shows the human booking target, date, planned time and duration.
+The user never has to inspect raw Simplicate JSON payloads. The confirmation dialog shows the human booking target, date, planned time and duration.
 
 ## Book-task eligibility
 
