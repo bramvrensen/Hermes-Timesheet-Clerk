@@ -6,10 +6,12 @@ inside that existing review surface.
 """
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import streamlit as st
 
+from .http import IntegrationError
 from .single_booking import execute_single_entry_booking, preview_single_entry, task_booking_ready
 from .storage import PlanRepository
 from .ui_time import format_duration
@@ -45,13 +47,34 @@ def _confirmation_key(plan_id: str, entry_id: str) -> str:
     return f"show-book-confirm-{plan_id}-{entry_id}"
 
 
+def _safe_error_text(exc: Exception) -> str:
+    if not isinstance(exc, IntegrationError):
+        return str(exc)
+    head = exc.message
+    if exc.status_code is not None:
+        head = f"{head} · HTTP {exc.status_code}"
+    details = exc.details
+    if details in (None, "", {}, []):
+        return head
+    try:
+        detail_text = json.dumps(details, ensure_ascii=False, indent=2, sort_keys=True)
+    except TypeError:
+        detail_text = str(details)
+    detail_text = detail_text[:4000]
+    return f"{head}\n\n{detail_text}"
+
+
+def _show_error(exc: Exception) -> None:
+    st.error(_safe_error_text(exc))
+
+
 def _render_booking_confirmation(repo: PlanRepository, plan_id: str, entry_id: str) -> None:
     """Render preflight and confirmation inline in the current review dialog."""
     try:
         with st.spinner("Checking Simplicate for an existing registration…", show_time=True):
             preview = preview_single_entry(repo, plan_id, entry_id)
     except Exception as exc:
-        st.error(str(exc))
+        _show_error(exc)
         return
 
     entry = preview["entry"]
@@ -96,7 +119,7 @@ def _render_booking_confirmation(repo: PlanRepository, plan_id: str, entry_id: s
                 else:
                     st.error(result.get("message") or "Booking was sent but could not be verified. Retry is blocked by the receipt.")
             except Exception as exc:
-                st.error(str(exc))
+                _show_error(exc)
     with actions[1]:
         if st.button("Cancel", use_container_width=True, key=f"cancel-book-{plan_id}-{entry_id}"):
             st.session_state.pop(_confirmation_key(plan_id, entry_id), None)
