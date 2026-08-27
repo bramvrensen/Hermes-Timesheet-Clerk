@@ -131,24 +131,39 @@ def write_enabled() -> bool:
     return str(os.environ.get(WRITE_ENV) or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _direct_target_ids(mapping: dict[str, Any]) -> tuple[Any, Any, Any]:
+    """Return stable direct-target IDs across planner/UI/API naming variants.
+
+    The canonical working-plan contract uses project_id/service_id/hour_type_id.
+    Older state and Simplicate-shaped rows may instead carry projectservice_id or
+    type_id, or nested project/service/hour_type objects. Booking accepts those
+    aliases but always emits the canonical Simplicate payload fields.
+    """
+    project = mapping.get("project") or {}
+    service = mapping.get("service") or mapping.get("projectservice") or mapping.get("task") or {}
+    hour_type = mapping.get("hour_type") or mapping.get("type") or {}
+    project_id = mapping.get("project_id") or _plain_id(project)
+    service_id = mapping.get("service_id") or mapping.get("projectservice_id") or _plain_id(service)
+    hour_type_id = mapping.get("hour_type_id") or mapping.get("type_id") or _plain_id(hour_type)
+    return project_id, service_id, hour_type_id
+
+
 def _entry_payload(entry: dict[str, Any], employee_id: str) -> dict[str, Any]:
     mode = entry.get("booking_mode")
     if mode == "assignment":
         assignment = entry.get("assignment") or {}
         project = assignment.get("project") or {}
-        task = assignment.get("task") or {}
-        hour_type = assignment.get("hour_type") or {}
+        task = assignment.get("task") or assignment.get("projectservice") or {}
+        hour_type = assignment.get("hour_type") or assignment.get("projecthourstype") or assignment.get("hours_type") or {}
         assignment_id = assignment.get("id")
-        project_id = project.get("id")
-        service_id = task.get("id")
-        hour_type_id = hour_type.get("id")
+        project_id = project.get("id") or assignment.get("project_id")
+        service_id = task.get("id") or assignment.get("service_id") or assignment.get("projectservice_id")
+        hour_type_id = hour_type.get("id") or assignment.get("hour_type_id") or assignment.get("type_id")
         _validate_assignment_date(entry, assignment)
     elif mode == "direct":
         mapping = entry.get("direct_mapping") or {}
         assignment_id = None
-        project_id = mapping.get("project_id")
-        service_id = mapping.get("projectservice_id") or mapping.get("service_id")
-        hour_type_id = mapping.get("hour_type_id") or mapping.get("type_id")
+        project_id, service_id, hour_type_id = _direct_target_ids(mapping)
     else:
         raise StateConflict(f"Entry {entry.get('entry_id')} has unsupported booking mode {mode!r}")
 
