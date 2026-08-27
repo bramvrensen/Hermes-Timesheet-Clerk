@@ -131,11 +131,14 @@ def _direct_editor_scoped(plan: dict, entry: dict) -> dict:
     }
 
 
-_original_editor = review._editor
+# Streamlit reruns this script in a persistent process. Keep one immutable reference
+# to the real review editor; never capture a wrapper installed by a previous rerun.
+if not hasattr(review, "_timesheet_clerk_base_editor"):
+    review._timesheet_clerk_base_editor = review._editor
 
 
 def _editor_with_task_booking(plan: dict, entry: dict) -> None:
-    _original_editor(plan, entry)
+    review._timesheet_clerk_base_editor(plan, entry)
     render_task_booking(review.repo, plan, entry)
 
 
