@@ -1,82 +1,50 @@
-"""Inline Booking tab for the Timesheet Clerk Streamlit frontend."""
+"""Booking status and staged batch controls for Timesheet Clerk."""
 from __future__ import annotations
 
-from typing import Any
+import json
 
 import streamlit as st
 
-from .booking import latest_approved_snapshot, preview_booking, write_enabled
-from .config import SimplicateConfig
-from .simplicate import SimplicateClient
-from .storage import PlanRepository, StateConflict
+from .storage import PlanRepository
+from .ui_time import format_duration
 
 
-def _status_label(value: str) -> str:
-    return {
-        "ready": "READY",
-        "already_booked": "RECEIPT EXISTS",
-        "possible_duplicate": "POSSIBLE DUPLICATE",
-    }.get(value, value.upper())
-
-
-def _render_payload(row: dict[str, Any]) -> None:
-    payload = row.get("payload") or {}
-    status = str(row.get("preflight_status") or "unknown")
-    title = f"{_status_label(status)} · {payload.get('start_date', '')} · {payload.get('hours', 0)}h · {row.get('description') or row.get('entry_id')}"
-    with st.expander(title):
-        st.caption(f"Entry {row.get('entry_id')} · Clockify sources: {', '.join(row.get('clockify_source_ids') or [])}")
-        st.json(payload, expanded=True)
-        matches = row.get("possible_existing_matches") or []
-        if matches:
-            st.warning(f"{len(matches)} possible existing Simplicate registration(s) match this row. Live booking must remain blocked until resolved.")
-            st.json(matches, expanded=False)
+def _receipts_for_plan(repo: PlanRepository, plan_id: str) -> list[dict]:
+    rows: list[dict] = []
+    for path in repo.receipts_dir.glob("*.json"):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if payload.get("plan_id") == plan_id:
+            rows.append(payload)
+    return rows
 
 
 def render_booking(repo: PlanRepository, plan_id: str) -> None:
     st.subheader("🧾 Booking")
-    st.caption("Simplicate booking preflight. This view does not write hours yet.")
-
-    try:
-        snapshot = latest_approved_snapshot(repo, plan_id)
-    except StateConflict:
-        st.info("This week has no approved snapshot yet. Finish review and use Approve week first.")
-        return
-
-    week = snapshot.get("week") or {}
-    st.caption(f"Approved week {week.get('monday')} → {week.get('sunday')} · revision {snapshot.get('revision')} · approved {snapshot.get('approved_at') or 'unknown'}")
-
-    if write_enabled():
-        st.warning("The backend live-write flag is enabled, but this UI still exposes preview only. No POST action is available here.")
-    else:
-        st.success("Live Simplicate writes are disabled. Preflight is read-only.")
-
-    key = f"booking_preview:{snapshot.get('plan_id')}:{snapshot.get('revision')}"
-    if st.button("Run Simplicate preflight", type="primary", use_container_width=True, key="run-booking-preflight"):
-        try:
-            with st.spinner("Reading existing Simplicate hours and building exact booking payloads…", show_time=True):
-                client = SimplicateClient(SimplicateConfig.from_env())
-                st.session_state[key] = preview_booking(repo, snapshot, client)
-        except Exception as exc:
-            st.session_state.pop(key, None)
-            st.error(f"Preflight failed: {exc}")
-
-    preview = st.session_state.get(key)
-    if not preview:
-        st.info("Run preflight to compare this approved snapshot with live Simplicate data. No hours will be created.")
-        return
+    plan = repo.get_latest(plan_id)
+    receipts = _receipts_for_plan(repo, plan_id)
+    entries = [row for row in plan.get("entries") or [] if not row.get("ignored")]
+    booked = [row for row in entries if row.get("reconciliation_state") == "BOOKED"]
+    booked_seconds = sum(int(row.get("planned_duration_seconds") or 0) for row in booked)
+    open_seconds = sum(int(row.get("planned_duration_seconds") or 0) for row in entries if row.get("reconciliation_state") != "BOOKED")
 
     cols = st.columns(4)
-    cols[0].metric("Rows", int(preview.get("entry_count") or 0))
-    cols[1].metric("Ready", int(preview.get("ready_count") or 0))
-    cols[2].metric("Receipted", int(preview.get("already_booked_count") or 0))
-    cols[3].metric("Possible duplicates", int(preview.get("possible_duplicate_count") or 0))
+    cols[0].metric("Bookable tasks", len(entries))
+    cols[1].metric("Booked", len(booked))
+    cols[2].metric("Booked time", format_duration(booked_seconds))
+    cols[3].metric("Open time", format_duration(open_seconds))
 
-    duplicate_count = int(preview.get("possible_duplicate_count") or 0)
-    if duplicate_count:
-        st.error(f"Preflight found {duplicate_count} possible duplicate row(s). Live booking would be blocked.")
-    else:
-        st.success("Preflight found no possible duplicate registrations.")
+    st.info("0.7.0 validates live Simplicate writes task by task. Open an entry in Review and use Book task. Each successful POST receives an immediate receipt and readback verification.")
+    if receipts:
+        st.caption(f"{len(receipts)} booking receipt(s) stored for this plan.")
 
-    st.markdown("#### Exact Simplicate payloads")
-    for row in preview.get("rows") or []:
-        _render_payload(row)
+    st.divider()
+    st.button(
+        "Book week",
+        disabled=True,
+        use_container_width=True,
+        help="Available after single-task and day booking have been validated in production.",
+    )
+    st.caption("Book day and Book week are intentionally locked during the first live-write validation phase.")
