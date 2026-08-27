@@ -18,38 +18,50 @@ def _snapshot():
                 "planned_end": "2026-08-24T10:30:00+02:00",
                 "booking_mode": "assignment",
                 "assignment": {
-                    "id": "assign-a",
-                    "project": {"id": "project-a"},
-                    "task": {"id": "service-a"},
-                    "hour_type": {"id": "type-a"},
+                    "id": "assignment:77b0674f1c503fe2b61e8ec4cf9407af",
+                    "project": {"id": "project:93b0674f1c503fe2b61e8ec4cf9407af"},
+                    "projectservice": {"id": "019b2c90-a472-7252-86dc-be5b658e74d9"},
+                    "projecthourstype": {
+                        "hourstype": {"id": "hourtype:48d0674f1c503fe2b61e8ec4cf9407af"}
+                    },
                     "start_date": "2026-08-01",
                     "end_date": "2026-09-30",
                 },
+                "billable": True,
                 "tier": "AUTO",
             }
         ],
     }
 
 
-def test_api_id_keeps_uuid_and_prefixes_legacy_ids():
-    assert _api_id("project", "abc") == "project:abc"
-    assert _api_id("project", "project:abc") == "project:abc"
-    assert _api_id("projectservice", "01930bb6-87aa-779b-9561-fcb44ac3121d") == "01930bb6-87aa-779b-9561-fcb44ac3121d"
+def test_api_id_enforces_write_prefixes_and_projectservice_exception():
+    uuid_value = "019b2c90-a472-7252-86dc-be5b658e74d9"
+    hex_value = "48d0674f1c503fe2b61e8ec4cf9407af"
+    assert _api_id("project", hex_value) == f"project:{hex_value}"
+    assert _api_id("project", f"project:{hex_value}") == f"project:{hex_value}"
+    assert _api_id("hourstype", f"hourtype:{hex_value}") == f"hourstype:{hex_value}"
+    assert _api_id("hourstype", uuid_value) == f"hourstype:{uuid_value}"
+    assert _api_id("assignment", hex_value) == f"assignment:{hex_value}"
+    assert _api_id("projectservice", uuid_value) == uuid_value
+    assert _api_id("projectservice", hex_value) == f"service:{hex_value}"
+    assert _api_id("projectservice", f"projectservice:{hex_value}") == f"service:{hex_value}"
 
 
-def test_assignment_payload_is_deterministic():
+def test_assignment_payload_uses_authoritative_simplicate_assignment_shape():
     entry = _snapshot()["entries"][0]
-    payload = _entry_payload(entry, "employee-a")
-    assert payload["employee_id"] == "employee:employee-a"
-    assert payload["project_id"] == "project:project-a"
-    assert payload["projectservice_id"] == "projectservice:service-a"
-    assert payload["type_id"] == "hourstype:type-a"
-    assert payload["assignment_id"] == "assignment:assign-a"
+    payload = _entry_payload(entry, "employee:6584321abcdef")
+    assert payload["employee_id"] == "employee:6584321abcdef"
+    assert payload["project_id"] == "project:93b0674f1c503fe2b61e8ec4cf9407af"
+    assert payload["projectservice_id"] == "019b2c90-a472-7252-86dc-be5b658e74d9"
+    assert payload["type_id"] == "hourstype:48d0674f1c503fe2b61e8ec4cf9407af"
+    assert payload["assignment_id"] == "assignment:77b0674f1c503fe2b61e8ec4cf9407af"
     assert payload["hours"] == 1.5
+    assert payload["billable"] is True
     assert payload["start_date"] == "2026-08-24 09:00:00"
+    assert payload["end_date"] == "2026-08-24 10:30:00"
 
 
-def test_direct_payload_accepts_simplicate_shaped_target_aliases():
+def test_direct_payload_matches_simplicate_ad_hoc_contract():
     entry = {
         "entry_id": "direct-a",
         "date": "2026-08-24",
@@ -58,20 +70,24 @@ def test_direct_payload_accepts_simplicate_shaped_target_aliases():
         "planned_start": "2026-08-24T09:00:00+02:00",
         "planned_end": "2026-08-24T11:00:00+02:00",
         "booking_mode": "direct",
+        "billable": True,
         "direct_mapping": {
-            "project": {"id": "project:p1", "name": "Kruitbosch"},
-            "projectservice": {"id": "projectservice:s1", "name": "Senior Consultant"},
-            "type": {"id": "hourstype:h1", "name": "Senior Consultant"},
+            "project": {"id": "project:93b0674f1c503fe2b61e8ec4cf9407af", "name": "Kruitbosch"},
+            "projectservice": {"id": "019b2c90-a472-7252-86dc-be5b658e74d9", "name": "Senior Consultant"},
+            "type": {"id": "hourtype:48d0674f1c503fe2b61e8ec4cf9407af", "name": "Senior Consultant"},
         },
     }
-    payload = _entry_payload(entry, "employee-a")
-    assert payload["project_id"] == "project:p1"
-    assert payload["projectservice_id"] == "projectservice:s1"
-    assert payload["type_id"] == "hourstype:h1"
+    payload = _entry_payload(entry, "6584321abcdef")
+    assert payload["employee_id"] == "employee:6584321abcdef"
+    assert payload["project_id"] == "project:93b0674f1c503fe2b61e8ec4cf9407af"
+    assert payload["projectservice_id"] == "019b2c90-a472-7252-86dc-be5b658e74d9"
+    assert payload["type_id"] == "hourstype:48d0674f1c503fe2b61e8ec4cf9407af"
     assert payload["hours"] == 2.0
+    assert payload["billable"] is True
+    assert "assignment_id" not in payload
 
 
-def test_direct_payload_prefers_canonical_working_plan_ids():
+def test_direct_payload_32_hex_service_uses_service_prefix():
     entry = {
         "entry_id": "direct-b",
         "date": "2026-08-24",
@@ -81,17 +97,17 @@ def test_direct_payload_prefers_canonical_working_plan_ids():
         "planned_end": "2026-08-24T10:00:00+02:00",
         "booking_mode": "direct",
         "direct_mapping": {
-            "project_id": "p-canonical",
-            "service_id": "s-canonical",
-            "hour_type_id": "h-canonical",
-            "projectservice_id": "s-alias",
-            "type_id": "h-alias",
+            "project_id": "93b0674f1c503fe2b61e8ec4cf9407af",
+            "service_id": "1234567890abcdef1234567890abcdef",
+            "hour_type_id": "48d0674f1c503fe2b61e8ec4cf9407af",
+            "billable": False,
         },
     }
-    payload = _entry_payload(entry, "employee-a")
-    assert payload["project_id"] == "project:p-canonical"
-    assert payload["projectservice_id"] == "projectservice:s-canonical"
-    assert payload["type_id"] == "hourstype:h-canonical"
+    payload = _entry_payload(entry, "6584321abcdef")
+    assert payload["project_id"] == "project:93b0674f1c503fe2b61e8ec4cf9407af"
+    assert payload["projectservice_id"] == "service:1234567890abcdef1234567890abcdef"
+    assert payload["type_id"] == "hourstype:48d0674f1c503fe2b61e8ec4cf9407af"
+    assert payload["billable"] is False
 
 
 def test_build_booking_rows_uses_only_approved_non_skipped_entries():
