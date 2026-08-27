@@ -1,5 +1,5 @@
 name: timesheet-clerk
-version: 0.7.5
+version: 0.7.6
 description: HERMES Timesheet Clerk tools, deterministic plan state, review workflow and guarded Simplicate task booking.
 author: Bram van Rensen
 homepage: https://github.com/bramvrensen/Hermes-Timesheet-Clerk
