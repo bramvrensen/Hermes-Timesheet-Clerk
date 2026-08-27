@@ -1,5 +1,27 @@
 # Simplicate booking
 
+## 0.7.6 authoritative Simplicate hours write contract
+
+The live `POST /hours/hours` transport is field-specific. Timesheet Clerk no longer applies one generic ID-prefix rule to all booking fields.
+
+Write identifiers are normalized as follows:
+
+- `employee_id`: always `employee:<id>`;
+- `project_id`: always `project:<id>`;
+- `type_id`: always `hourstype:<id>` even when read-side data exposes `hourtype:<id>` or a UUID-like value;
+- `assignment_id`: always `assignment:<id>` when booking planned work;
+- `projectservice_id`: UUIDs with dashes are sent without a prefix; 32-character hexadecimal IDs are sent as `service:<id>`.
+
+Direct/ad-hoc booking omits `assignment_id`. Assignment booking derives its target from the authoritative Simplicate assignment structure:
+
+```text
+assignment.project.id
+assignment.projectservice.id
+assignment.projecthourstype.hourstype.id
+```
+
+Both booking modes explicitly send `billable`, `start_date`, `end_date`, `hours` and `note`. Compatibility fallbacks remain available for older Clerk state, but the final write payload always follows this endpoint contract.
+
 ## 0.7.5 safe Simplicate rejection diagnostics
 
 Simplicate validation failures already arrive in the shared HTTP layer as an `IntegrationError` containing the HTTP status and parsed response details. Earlier booking UI reduced that to the generic exception string `External API rejected the request`, hiding the useful reason.
@@ -58,7 +80,7 @@ Visible controls:
 - `Book day`: visible but disabled during single-task validation;
 - `Book week`: visible but disabled during single-task validation.
 
-The user never has to inspect raw Simplicate JSON payloads. The confirmation dialog shows the human booking target, date, planned time and duration.
+The user never has to inspect raw Simplicate JSON payloads. The inline confirmation surface shows the human booking target, date, planned time and duration.
 
 ## Book-task eligibility
 
