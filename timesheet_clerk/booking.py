@@ -16,6 +16,7 @@ from .storage import PlanRepository, StateConflict
 WRITE_ENV = "TIMESHEET_CLERK_SIMPLICATE_WRITE_ENABLED"
 CONFIRMATION_TEXT = "BOOK APPROVED HOURS"
 _UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+_HEX32_RE = re.compile(r"^[0-9a-fA-F]{32}$")
 
 
 def latest_approved_snapshot(repo: PlanRepository, plan_id: str | None = None) -> dict[str, Any]:
@@ -132,13 +133,7 @@ def write_enabled() -> bool:
 
 
 def _direct_target_ids(mapping: dict[str, Any]) -> tuple[Any, Any, Any]:
-    """Return stable direct-target IDs across planner/UI/API naming variants.
-
-    The canonical working-plan contract uses project_id/service_id/hour_type_id.
-    Older state and Simplicate-shaped rows may instead carry projectservice_id or
-    type_id, or nested project/service/hour_type objects. Booking accepts those
-    aliases but always emits the canonical Simplicate payload fields.
-    """
+    """Return stable direct-target IDs across planner/UI/API naming variants."""
     project = mapping.get("project") or {}
     service = mapping.get("service") or mapping.get("projectservice") or mapping.get("task") or {}
     hour_type = mapping.get("hour_type") or mapping.get("type") or {}
@@ -148,17 +143,37 @@ def _direct_target_ids(mapping: dict[str, Any]) -> tuple[Any, Any, Any]:
     return project_id, service_id, hour_type_id
 
 
+def _assignment_target_ids(assignment: dict[str, Any]) -> tuple[Any, Any, Any, Any]:
+    """Extract Simplicate booking target fields from a planning assignment.
+
+    The authoritative assignment shape is:
+      assignment.project.id
+      assignment.projectservice.id
+      assignment.projecthourstype.hourstype.id
+    Compatibility fallbacks preserve older normalized Clerk state.
+    """
+    project = assignment.get("project") or {}
+    projectservice = assignment.get("projectservice") or assignment.get("task") or {}
+    projecthourstype = assignment.get("projecthourstype") or {}
+    hour_type = (
+        projecthourstype.get("hourstype")
+        or assignment.get("hour_type")
+        or assignment.get("hours_type")
+        or {}
+    )
+    return (
+        assignment.get("id"),
+        project.get("id") or assignment.get("project_id"),
+        projectservice.get("id") or assignment.get("service_id") or assignment.get("projectservice_id"),
+        hour_type.get("id") or assignment.get("hour_type_id") or assignment.get("type_id"),
+    )
+
+
 def _entry_payload(entry: dict[str, Any], employee_id: str) -> dict[str, Any]:
     mode = entry.get("booking_mode")
     if mode == "assignment":
         assignment = entry.get("assignment") or {}
-        project = assignment.get("project") or {}
-        task = assignment.get("task") or assignment.get("projectservice") or {}
-        hour_type = assignment.get("hour_type") or assignment.get("projecthourstype") or assignment.get("hours_type") or {}
-        assignment_id = assignment.get("id")
-        project_id = project.get("id") or assignment.get("project_id")
-        service_id = task.get("id") or assignment.get("service_id") or assignment.get("projectservice_id")
-        hour_type_id = hour_type.get("id") or assignment.get("hour_type_id") or assignment.get("type_id")
+        assignment_id, project_id, service_id, hour_type_id = _assignment_target_ids(assignment)
         _validate_assignment_date(entry, assignment)
     elif mode == "direct":
         mapping = entry.get("direct_mapping") or {}
@@ -183,10 +198,20 @@ def _entry_payload(entry: dict[str, Any], employee_id: str) -> dict[str, Any]:
         "end_date": _simplicate_datetime(entry.get("planned_end"), entry.get("date")),
         "hours": round(seconds / 3600.0, 4),
         "note": str((entry.get("source") or {}).get("description") or entry.get("description") or "").strip(),
+        "billable": _entry_billable(entry),
     }
     if assignment_id:
         payload["assignment_id"] = _api_id("assignment", assignment_id)
     return payload
+
+
+def _entry_billable(entry: dict[str, Any]) -> bool:
+    if isinstance(entry.get("billable"), bool):
+        return bool(entry["billable"])
+    mapping = entry.get("direct_mapping") or {}
+    if isinstance(mapping.get("billable"), bool):
+        return bool(mapping["billable"])
+    return True
 
 
 def _post_hours(config: SimplicateConfig, payload: dict[str, Any]) -> Any:
@@ -216,12 +241,23 @@ def _validate_assignment_date(entry: dict[str, Any], assignment: dict[str, Any])
 
 
 def _api_id(prefix: str, value: Any) -> str:
+    """Normalize IDs exactly as Simplicate's hours write endpoint requires.
+
+    employee/project/hourstype/assignment always require their canonical prefix.
+    projectservice is special: UUIDs with dashes are sent bare, 32-char hex IDs
+    require the `service:` prefix.
+    """
     text = str(value or "").strip()
     if not text:
         return ""
-    if ":" in text or _UUID_RE.match(text):
-        return text
-    return f"{prefix}:{text}"
+    raw = text.split(":", 1)[1] if ":" in text else text
+    if prefix == "projectservice":
+        if _UUID_RE.match(raw):
+            return raw
+        if _HEX32_RE.match(raw):
+            return f"service:{raw}"
+        return f"service:{raw}"
+    return f"{prefix}:{raw}"
 
 
 def _plain_id(value: Any) -> str:
