@@ -55,6 +55,7 @@ def _validate_payload_hour_type(client: SimplicateClient, payload: dict[str, Any
 
 
 def preview_single_entry(repo: PlanRepository, plan_id: str, entry_id: str) -> dict[str, Any]:
+    """Perform the expensive live preflight exactly once for a persisted revision."""
     plan = repo.get_latest(plan_id)
     persisted = next((row for row in plan.get("entries") or [] if row.get("entry_id") == entry_id), None)
     if not persisted:
@@ -85,18 +86,46 @@ def preview_single_entry(repo: PlanRepository, plan_id: str, entry_id: str) -> d
     }
 
 
-def execute_single_entry_booking(repo: PlanRepository, plan_id: str, entry_id: str) -> dict[str, Any]:
-    """Book exactly one persisted entry and verify it by reading Simplicate back.
+def _validate_prepared_preview(repo: PlanRepository, plan_id: str, entry_id: str, preview: dict[str, Any]) -> None:
+    """Cheaply prove a cached preflight still belongs to the current persisted revision."""
+    if str(preview.get("plan_id") or "") != plan_id or str(preview.get("entry_id") or "") != entry_id:
+        raise StateConflict("Booking preflight does not belong to this task; run preflight again.")
+    latest = repo.get_latest(plan_id)
+    if int(preview.get("revision") or -1) != int(latest.get("revision") or -2):
+        raise StateConflict("This plan changed after booking preflight. Re-open Book task and validate again.")
+    current = next((row for row in latest.get("entries") or [] if row.get("entry_id") == entry_id), None)
+    if not current:
+        raise StateConflict(f"Entry not found: {entry_id}")
+    if entry_id in _receipt_entry_ids(repo, plan_id):
+        raise StateConflict("This entry already has a Timesheet Clerk booking receipt.")
 
-    Assignment targets are rehydrated from live Simplicate immediately before the
-    POST. The receipt is written immediately after a successful POST, before
-    readback, so a readback/network failure can never cause a second POST on retry.
+
+def execute_single_entry_booking(
+    repo: PlanRepository,
+    plan_id: str,
+    entry_id: str,
+    *,
+    prepared_preview: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Book one task using one live preflight plus one post-write readback.
+
+    A prepared preview may be reused by the UI after explicit confirmation. It is
+    accepted only while the persisted plan revision is unchanged and no receipt
+    has appeared. This avoids repeating slow Simplicate assignment/hour-type/
+    duplicate reads merely because Streamlit reran the confirmation surface.
+
+    The receipt is written immediately after a successful POST, before readback,
+    so a readback/network failure can never cause a second POST on retry.
     """
-    preview = preview_single_entry(repo, plan_id, entry_id)
+    preview = deepcopy(prepared_preview) if prepared_preview is not None else preview_single_entry(repo, plan_id, entry_id)
+    if prepared_preview is not None:
+        _validate_prepared_preview(repo, plan_id, entry_id, preview)
     if preview["status"] == "already_booked":
         raise StateConflict("This entry already has a Timesheet Clerk booking receipt.")
     if preview["status"] == "possible_duplicate":
         raise StateConflict("A matching Simplicate registration already exists; booking is blocked to prevent a duplicate.")
+    if preview["status"] != "ready":
+        raise StateConflict("Booking preflight is not ready; run preflight again.")
 
     client = SimplicateClient(SimplicateConfig.from_env())
     response = _post_hours(client.config, preview["payload"])
