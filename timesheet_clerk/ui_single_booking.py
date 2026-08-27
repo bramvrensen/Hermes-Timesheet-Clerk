@@ -47,6 +47,19 @@ def _confirmation_key(plan_id: str, entry_id: str) -> str:
     return f"show-book-confirm-{plan_id}-{entry_id}"
 
 
+def _preflight_key(plan_id: str, revision: Any, entry_id: str) -> str:
+    return f"book-preflight-{plan_id}-{revision}-{entry_id}"
+
+
+def _clear_booking_state(plan_id: str, entry_id: str) -> None:
+    st.session_state.pop(_confirmation_key(plan_id, entry_id), None)
+    prefix = f"book-preflight-{plan_id}-"
+    suffix = f"-{entry_id}"
+    for key in list(st.session_state.keys()):
+        if isinstance(key, str) and key.startswith(prefix) and key.endswith(suffix):
+            st.session_state.pop(key, None)
+
+
 def _safe_error_text(exc: Exception) -> str:
     if not isinstance(exc, IntegrationError):
         return str(exc)
@@ -68,14 +81,18 @@ def _show_error(exc: Exception) -> None:
     st.error(_safe_error_text(exc))
 
 
-def _render_booking_confirmation(repo: PlanRepository, plan_id: str, entry_id: str) -> None:
-    """Render preflight and confirmation inline in the current review dialog."""
-    try:
-        with st.spinner("Checking Simplicate for an existing registration…", show_time=True):
-            preview = preview_single_entry(repo, plan_id, entry_id)
-    except Exception as exc:
-        _show_error(exc)
-        return
+def _render_booking_confirmation(repo: PlanRepository, plan_id: str, revision: Any, entry_id: str) -> None:
+    """Render one cached preflight and confirmation inline in the review dialog."""
+    cache_key = _preflight_key(plan_id, revision, entry_id)
+    preview = st.session_state.get(cache_key)
+    if preview is None:
+        try:
+            with st.spinner("Checking Simplicate for an existing registration…", show_time=True):
+                preview = preview_single_entry(repo, plan_id, entry_id)
+            st.session_state[cache_key] = preview
+        except Exception as exc:
+            _show_error(exc)
+            return
 
     entry = preview["entry"]
     st.markdown(f"#### Book to Simplicate · {_description(entry)}")
@@ -111,9 +128,9 @@ def _render_booking_confirmation(repo: PlanRepository, plan_id: str, entry_id: s
         ):
             try:
                 with st.spinner("Booking and verifying in Simplicate…", show_time=True):
-                    result = execute_single_entry_booking(repo, plan_id, entry_id)
+                    result = execute_single_entry_booking(repo, plan_id, entry_id, prepared_preview=preview)
                 if result.get("verified"):
-                    st.session_state.pop(_confirmation_key(plan_id, entry_id), None)
+                    _clear_booking_state(plan_id, entry_id)
                     st.session_state["booking_flash"] = "Task booked and verified in Simplicate"
                     st.rerun()
                 else:
@@ -122,18 +139,20 @@ def _render_booking_confirmation(repo: PlanRepository, plan_id: str, entry_id: s
                 _show_error(exc)
     with actions[1]:
         if st.button("Cancel", use_container_width=True, key=f"cancel-book-{plan_id}-{entry_id}"):
-            st.session_state.pop(_confirmation_key(plan_id, entry_id), None)
+            _clear_booking_state(plan_id, entry_id)
             st.rerun()
 
 
 def render_task_booking(repo: PlanRepository, plan: dict[str, Any], entry: dict[str, Any]) -> None:
     ready, reason = task_booking_ready(entry)
     plan_id = str(plan["plan_id"])
+    revision = plan.get("revision")
     entry_id = str(entry["entry_id"])
     panel_key = _confirmation_key(plan_id, entry_id)
 
     st.divider()
     if entry.get("reconciliation_state") == "BOOKED":
+        _clear_booking_state(plan_id, entry_id)
         st.success("Booked in Simplicate")
         return
 
@@ -151,4 +170,4 @@ def render_task_booking(repo: PlanRepository, plan: dict[str, Any], entry: dict[
         return
 
     if st.session_state.get(panel_key):
-        _render_booking_confirmation(repo, plan_id, entry_id)
+        _render_booking_confirmation(repo, plan_id, revision, entry_id)
