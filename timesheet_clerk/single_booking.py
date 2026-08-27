@@ -5,7 +5,7 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any
 
-from .booking import _entry_payload, _existing_projection, _looks_like_same_registration, _plain_id, _post_hours, _receipt_entry_ids
+from .booking import _entry_payload, _existing_projection, _looks_like_same_registration, _post_hours, _receipt_entry_ids
 from .config import SimplicateConfig
 from .simplicate import SimplicateClient
 from .storage import PlanRepository, StateConflict
@@ -27,48 +27,23 @@ def task_booking_ready(entry: dict[str, Any]) -> tuple[bool, str]:
     return True, "Ready to book."
 
 
-def _rehydrate_assignment_entry(client: SimplicateClient, entry: dict[str, Any]) -> dict[str, Any]:
-    """Replace stale persisted assignment metadata with the current Simplicate target."""
-    if entry.get("booking_mode") != "assignment":
-        return deepcopy(entry)
-    assignment_id = _plain_id(entry.get("assignment") or {})
-    if not assignment_id:
-        raise StateConflict("Assignment booking is missing an assignment ID.")
-    day = str(entry.get("date") or "")[:10]
-    candidates = client.get_booking_assignments(day, day)
-    live = next((row for row in candidates if _plain_id(row) == assignment_id), None)
-    if not live:
-        raise StateConflict(f"Assignment {assignment_id} is no longer available in Simplicate for {day}; booking is blocked.")
-    hydrated = deepcopy(entry)
-    hydrated["assignment"] = deepcopy(live)
-    return hydrated
-
-
-def _validate_payload_hour_type(client: SimplicateClient, payload: dict[str, Any]) -> None:
-    """Require the outgoing type_id to exist in live Simplicate hour-type masterdata."""
-    outgoing = _plain_id(payload.get("type_id"))
-    valid = {_plain_id(row.get("id")) for row in client.get_hour_types() if isinstance(row, dict)}
-    if not outgoing or outgoing not in valid:
-        raise StateConflict(
-            f"Booking type {payload.get('type_id') or '<missing>'} is not a current Simplicate hour type; POST blocked."
-        )
-
-
 def preview_single_entry(repo: PlanRepository, plan_id: str, entry_id: str) -> dict[str, Any]:
-    """Perform the expensive live preflight exactly once for a persisted revision."""
+    """Perform only the duplicate preflight for a validated persisted plan entry.
+
+    Mapping validity belongs to Generate / Refresh. Booking intentionally does not
+    re-fetch assignments, services or hour types; if Simplicate changed after plan
+    generation the POST may fail and the entry remains available for re-mapping.
+    """
     plan = repo.get_latest(plan_id)
-    persisted = next((row for row in plan.get("entries") or [] if row.get("entry_id") == entry_id), None)
-    if not persisted:
+    entry = next((row for row in plan.get("entries") or [] if row.get("entry_id") == entry_id), None)
+    if not entry:
         raise StateConflict(f"Entry not found: {entry_id}")
-    ready, reason = task_booking_ready(persisted)
+    ready, reason = task_booking_ready(entry)
     if not ready:
         raise StateConflict(reason)
 
     client = SimplicateClient(SimplicateConfig.from_env())
-    entry = _rehydrate_assignment_entry(client, persisted)
     payload = _entry_payload(entry, client.config.employee_id)
-    _validate_payload_hour_type(client, payload)
-
     receipted = entry_id in _receipt_entry_ids(repo, plan_id)
     day = str(entry.get("date") or "")[:10]
     booked = client.get_booked_hours(day, day)
@@ -79,7 +54,6 @@ def preview_single_entry(repo: PlanRepository, plan_id: str, entry_id: str) -> d
         "revision": plan["revision"],
         "entry_id": entry_id,
         "entry": deepcopy(entry),
-        "persisted_entry": deepcopy(persisted),
         "payload": payload,
         "status": status,
         "matches": matches,
@@ -87,7 +61,7 @@ def preview_single_entry(repo: PlanRepository, plan_id: str, entry_id: str) -> d
 
 
 def _validate_prepared_preview(repo: PlanRepository, plan_id: str, entry_id: str, preview: dict[str, Any]) -> None:
-    """Cheaply prove a cached preflight still belongs to the current persisted revision."""
+    """Cheaply prove a cached duplicate preflight still matches persisted state."""
     if str(preview.get("plan_id") or "") != plan_id or str(preview.get("entry_id") or "") != entry_id:
         raise StateConflict("Booking preflight does not belong to this task; run preflight again.")
     latest = repo.get_latest(plan_id)
@@ -107,15 +81,13 @@ def execute_single_entry_booking(
     *,
     prepared_preview: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Book one task using one live preflight plus one post-write readback.
+    """Book one task using one duplicate preflight plus one post-write readback.
 
-    A prepared preview may be reused by the UI after explicit confirmation. It is
-    accepted only while the persisted plan revision is unchanged and no receipt
-    has appeared. This avoids repeating slow Simplicate assignment/hour-type/
-    duplicate reads merely because Streamlit reran the confirmation surface.
-
-    The receipt is written immediately after a successful POST, before readback,
-    so a readback/network failure can never cause a second POST on retry.
+    Generate / Refresh already validated the mapping against its Simplicate
+    snapshot. A prepared duplicate preview may therefore be reused after explicit
+    confirmation while the persisted revision is unchanged. A later Simplicate
+    masterdata change is allowed to fail naturally at POST; no receipt is written
+    for a rejected POST and the entry remains reviewable.
     """
     preview = deepcopy(prepared_preview) if prepared_preview is not None else preview_single_entry(repo, plan_id, entry_id)
     if prepared_preview is not None:
@@ -159,8 +131,6 @@ def execute_single_entry_booking(
     entry["booked_at"] = timestamp
     entry["simplicate_booking_id"] = matches[0].get("id")
     entry["booking_receipt"] = str(receipt_path)
-    if entry.get("booking_mode") == "assignment":
-        entry["assignment"] = deepcopy(preview["entry"].get("assignment") or {})
     saved = repo.save_revision(latest, expected_revision=int(latest["revision"]))
     return {
         "success": True, "posted": True, "verified": True, "plan_id": plan_id,
