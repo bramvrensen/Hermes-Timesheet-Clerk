@@ -1,4 +1,9 @@
-"""Human-readable single-task booking UI for Streamlit."""
+"""Human-readable single-task booking UI for Streamlit.
+
+The review editor itself is already a Streamlit dialog. Streamlit forbids nested
+``st.dialog`` calls, so task-booking confirmation is deliberately rendered inline
+inside that existing review surface.
+"""
 from __future__ import annotations
 
 from typing import Any
@@ -36,8 +41,12 @@ def _description(entry: dict[str, Any]) -> str:
     return str((entry.get("source") or {}).get("description") or entry.get("description") or "Untitled")
 
 
-@st.dialog("Book task to Simplicate", width="large")
-def _book_dialog(repo: PlanRepository, plan_id: str, entry_id: str) -> None:
+def _confirmation_key(plan_id: str, entry_id: str) -> str:
+    return f"show-book-confirm-{plan_id}-{entry_id}"
+
+
+def _render_booking_confirmation(repo: PlanRepository, plan_id: str, entry_id: str) -> None:
+    """Render preflight and confirmation inline in the current review dialog."""
     try:
         with st.spinner("Checking Simplicate for an existing registration…", show_time=True):
             preview = preview_single_entry(repo, plan_id, entry_id)
@@ -46,7 +55,7 @@ def _book_dialog(repo: PlanRepository, plan_id: str, entry_id: str) -> None:
         return
 
     entry = preview["entry"]
-    st.markdown(f"### {_description(entry)}")
+    st.markdown(f"#### Book to Simplicate · {_description(entry)}")
     st.write(_target(entry))
     start = str(entry.get("planned_start") or "")
     end = str(entry.get("planned_end") or "")
@@ -63,28 +72,60 @@ def _book_dialog(repo: PlanRepository, plan_id: str, entry_id: str) -> None:
         st.error("A matching registration already exists in Simplicate. Booking is blocked to prevent a duplicate.")
         return
 
-    st.warning("This action creates one real time registration in Simplicate. Only this task will be written.")
-    confirmed = st.checkbox("I checked this task and want to book it", key=f"confirm-book-{plan_id}-{entry_id}")
-    if st.button("Book task", type="primary", disabled=not confirmed, use_container_width=True, key=f"execute-book-{plan_id}-{entry_id}"):
-        try:
-            with st.spinner("Booking and verifying in Simplicate…", show_time=True):
-                result = execute_single_entry_booking(repo, plan_id, entry_id)
-            if result.get("verified"):
-                st.session_state["booking_flash"] = "Task booked and verified in Simplicate"
-                st.rerun()
-            else:
-                st.error(result.get("message") or "Booking was sent but could not be verified. Retry is blocked by the receipt.")
-        except Exception as exc:
-            st.error(str(exc))
+    st.warning("This creates one real time registration in Simplicate. Only this task will be written.")
+    confirmed = st.checkbox(
+        "I checked this task and want to book it",
+        key=f"confirm-book-{plan_id}-{entry_id}",
+    )
+    actions = st.columns([1, 1])
+    with actions[0]:
+        if st.button(
+            "Confirm booking",
+            type="primary",
+            disabled=not confirmed,
+            use_container_width=True,
+            key=f"execute-book-{plan_id}-{entry_id}",
+        ):
+            try:
+                with st.spinner("Booking and verifying in Simplicate…", show_time=True):
+                    result = execute_single_entry_booking(repo, plan_id, entry_id)
+                if result.get("verified"):
+                    st.session_state.pop(_confirmation_key(plan_id, entry_id), None)
+                    st.session_state["booking_flash"] = "Task booked and verified in Simplicate"
+                    st.rerun()
+                else:
+                    st.error(result.get("message") or "Booking was sent but could not be verified. Retry is blocked by the receipt.")
+            except Exception as exc:
+                st.error(str(exc))
+    with actions[1]:
+        if st.button("Cancel", use_container_width=True, key=f"cancel-book-{plan_id}-{entry_id}"):
+            st.session_state.pop(_confirmation_key(plan_id, entry_id), None)
+            st.rerun()
 
 
 def render_task_booking(repo: PlanRepository, plan: dict[str, Any], entry: dict[str, Any]) -> None:
     ready, reason = task_booking_ready(entry)
+    plan_id = str(plan["plan_id"])
+    entry_id = str(entry["entry_id"])
+    panel_key = _confirmation_key(plan_id, entry_id)
+
     st.divider()
     if entry.get("reconciliation_state") == "BOOKED":
         st.success("Booked in Simplicate")
         return
-    if st.button("Book task", type="secondary", disabled=not ready, use_container_width=True, key=f"book-task-{entry.get('entry_id')}"):
-        _book_dialog(repo, plan["plan_id"], entry["entry_id"])
+
+    if not st.session_state.get(panel_key):
+        if st.button(
+            "Book task",
+            type="secondary",
+            disabled=not ready,
+            use_container_width=True,
+            key=f"book-task-{entry_id}",
+        ):
+            st.session_state[panel_key] = True
     if not ready:
         st.caption(reason)
+        return
+
+    if st.session_state.get(panel_key):
+        _render_booking_confirmation(repo, plan_id, entry_id)
