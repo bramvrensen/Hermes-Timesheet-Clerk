@@ -55,7 +55,6 @@ def test_single_booking_writes_receipt_then_marks_verified(monkeypatch, tmp_path
 
     class StatefulClient:
         def __init__(self, config): self.config = config
-        def get_hour_types(self): return [{"id": "hourstype:h1", "label": "Senior Consultant"}]
         def get_booked_hours(self, start, end):
             if not posted["done"]: return []
             return [{
@@ -81,7 +80,7 @@ def test_single_booking_writes_receipt_then_marks_verified(monkeypatch, tmp_path
         raise AssertionError("second booking should be blocked")
 
 
-def test_assignment_preview_rehydrates_stale_hour_type_before_payload(monkeypatch, tmp_path):
+def test_booking_preview_uses_persisted_assignment_without_masterdata_refresh(monkeypatch, tmp_path):
     _env(monkeypatch)
     repo = PlanRepository(tmp_path)
     plan = new_plan_skeleton(plan_id="p", monday="2026-08-24", sunday="2026-08-30")
@@ -93,7 +92,7 @@ def test_assignment_preview_rehydrates_stale_hour_type_before_payload(monkeypatc
         "id": "assign1",
         "project": {"id": "p1", "name": "Project"},
         "task": {"id": "019e4a9a-56b8-73f0-96df-1fe506d2aea5", "name": "Task"},
-        "hour_type": {"id": "WRONG_RELATION_ID", "name": None},
+        "hour_type": {"id": "f902fc5514b044a2", "name": "Senior Consultant"},
         "start_date": "2026-08-01", "end_date": "2026-08-31",
     }
     plan["entries"] = [entry]
@@ -101,27 +100,19 @@ def test_assignment_preview_rehydrates_stale_hour_type_before_payload(monkeypatc
 
     import timesheet_clerk.single_booking as sb
 
-    class LiveClient:
+    class ThinClient:
         def __init__(self, config): self.config = config
-        def get_booking_assignments(self, start, end):
-            return [{
-                "id": "assign1",
-                "project": {"id": "p1", "name": "Project"},
-                "task": {"id": "019e4a9a-56b8-73f0-96df-1fe506d2aea5", "name": "Task"},
-                "hour_type": {"id": "f902fc5514b044a2", "name": "Senior Consultant"},
-                "start_date": "2026-08-01", "end_date": "2026-08-31",
-            }]
-        def get_hour_types(self):
-            return [{"id": "hourstype:f902fc5514b044a2", "label": "Senior Consultant"}]
         def get_booked_hours(self, start, end): return []
+        def get_booking_assignments(self, *args): raise AssertionError("booking must not refresh assignments")
+        def get_hour_types(self): raise AssertionError("booking must not refresh hour types")
 
-    monkeypatch.setattr(sb, "SimplicateClient", LiveClient)
+    monkeypatch.setattr(sb, "SimplicateClient", ThinClient)
     preview = preview_single_entry(repo, "p", "e1")
     assert preview["payload"]["type_id"] == "hourstype:f902fc5514b044a2"
-    assert preview["entry"]["assignment"]["hour_type"]["name"] == "Senior Consultant"
+    assert preview["status"] == "ready"
 
 
-def test_booking_blocks_unknown_hour_type_before_post(monkeypatch, tmp_path):
+def test_prepared_preview_avoids_second_duplicate_preflight(monkeypatch, tmp_path):
     _env(monkeypatch)
     repo = PlanRepository(tmp_path)
     plan = new_plan_skeleton(plan_id="p", monday="2026-08-24", sunday="2026-08-30")
@@ -130,16 +121,25 @@ def test_booking_blocks_unknown_hour_type_before_post(monkeypatch, tmp_path):
     repo.create(plan)
 
     import timesheet_clerk.single_booking as sb
+    calls = {"reads": 0, "posted": False}
 
-    class BadTypeClient:
+    class CountClient:
         def __init__(self, config): self.config = config
-        def get_hour_types(self): return [{"id": "hourstype:other"}]
-        def get_booked_hours(self, start, end): return []
+        def get_booked_hours(self, start, end):
+            calls["reads"] += 1
+            if not calls["posted"]:
+                return []
+            return [{
+                "id": "hours:1", "project": {"id": "project:p1"},
+                "projectservice": {"id": "service:s1"}, "type": {"id": "hourstype:h1"},
+                "start_date": "2026-08-24 09:00:00", "hours": 1.0,
+            }]
 
-    monkeypatch.setattr(sb, "SimplicateClient", BadTypeClient)
-    try:
-        preview_single_entry(repo, "p", "e1")
-    except Exception as exc:
-        assert "not a current simplicate hour type" in str(exc).lower()
-    else:
-        raise AssertionError("unknown hour type must be blocked before POST")
+    monkeypatch.setattr(sb, "SimplicateClient", CountClient)
+    monkeypatch.setattr(sb, "_post_hours", lambda config, payload: calls.update(posted=True) or {"id": "hours:1"})
+
+    preview = preview_single_entry(repo, "p", "e1")
+    assert calls["reads"] == 1
+    result = execute_single_entry_booking(repo, "p", "e1", prepared_preview=preview)
+    assert result["verified"] is True
+    assert calls["reads"] == 2  # one duplicate check, one readback only
