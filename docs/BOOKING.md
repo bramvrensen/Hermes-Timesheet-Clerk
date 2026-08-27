@@ -1,5 +1,25 @@
 # Simplicate booking
 
+## 0.7.4 inline confirmation inside Review
+
+The Review entry editor is already a Streamlit dialog. Streamlit does not allow one `st.dialog` to open another `st.dialog`, so task booking confirmation is rendered inline inside the existing Review dialog.
+
+The flow is now:
+
+```text
+Review / edit
+    ↓
+Book task
+    ↓
+inline Simplicate preflight + human-readable target/date/duration
+    ↓
+explicit checkbox
+    ↓
+Confirm booking
+```
+
+No second modal is created. Cancel simply collapses the inline confirmation block. The booking transaction itself is unchanged.
+
 ## 0.7.3 booking-target normalization
 
 The working-plan contract stores direct mappings canonically as `project_id`, `service_id` and `hour_type_id`, while older plans and Simplicate-shaped data may expose equivalent values as `projectservice_id`, `type_id` or nested `project`, `projectservice`/`service`, and `hour_type`/`type` objects.
@@ -26,7 +46,7 @@ Visible controls:
 - `Book day`: visible but disabled during single-task validation;
 - `Book week`: visible but disabled during single-task validation.
 
-The user never has to inspect raw Simplicate JSON payloads. The confirmation dialog shows the human booking target, date, planned time and duration.
+The user never has to inspect raw Simplicate JSON payloads. The inline confirmation surface shows the human booking target, date, planned time and duration.
 
 ## Book-task eligibility
 
