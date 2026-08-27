@@ -2,7 +2,7 @@
 
 Human-in-the-loop timesheet planning and booking for HERMES Agent.
 
-> Status: **0.6.7 deterministic planner.** Clockify/Simplicate reads, decisions-only mapping orchestration, source reconciliation, review UI, deterministic day scheduling, reviewed-entry consolidation, human duration display, project-service-scoped hour type selection, feedback, approvals, safe week rebuilds and current-week generation are available. Simplicate writes remain deliberately disabled until the booking path is validated.
+> Status: **0.6.8 deterministic planner.** Clockify/Simplicate reads, decisions-only mapping orchestration, source reconciliation, review UI, deterministic day scheduling, reviewed-entry consolidation, human duration display, project-service-scoped hour type selection, feedback, approvals, safe week rebuilds and current-week generation are available. Simplicate writes remain deliberately disabled until the booking path is validated.
 
 See [`docs/DESIGN.md`](docs/DESIGN.md), [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md) and [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md).
 
@@ -24,6 +24,14 @@ timesheet_mapping_apply
             ↓
 validated + scheduled plan revision
 ```
+
+## 0.6.8 non-destructive existing Hour Type handling
+
+Opening the direct-mapping editor may never erase an already persisted complete Hour Type merely because the current Simplicate review context cannot re-hydrate that service/hour-type relation.
+
+0.6.8 therefore keeps a persisted Hour Type available when the selected Task / service is still the same service. The UI warns that the relationship could not be re-verified, but the current mapping remains complete and `Save changes` remains available. New Hour Type choices are still restricted to the strictly scoped values supplied by Simplicate.
+
+If the user changes Task / service, an Hour Type from the old service is not carried across. This preserves existing reviewed state without weakening validation for new mappings.
 
 ## 0.6.7 authoritative project-service hour types
 
