@@ -12,16 +12,15 @@ from datetime import date, datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from .config import SimplicateConfig
 from .contracts import ContractError, new_plan_skeleton, utc_now, validate_plan
 from .coverage import is_pending_mapping
-from .mapping_validation import (
-    downgrade_invalid_decision,
-    entry_mapping_invalid_reason,
-    normalize_decision_against_snapshot,
-)
+from .generation_snapshot import load_generation_snapshot, store_generation_snapshot
+from .mapping_validation import downgrade_invalid_decision, entry_mapping_invalid_reason, normalize_decision_against_snapshot
 from .review import source_fingerprint
 from .runtime import read_config
 from .scheduling import reflow_plan_days
+from .simplicate import SimplicateClient
 from .storage import PlanNotFound, PlanRepository, StateConflict
 from .sync import attach_source_snapshots, covered_source_ids, plan_summary, source_delta
 
@@ -67,6 +66,10 @@ def prepare_mapping_work(
     simplicate_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     _validate_week(monday, sunday)
+    if simplicate_context is None:
+        simplicate_context = SimplicateClient(SimplicateConfig.from_env()).get_context(monday, sunday)
+        store_generation_snapshot(repo, monday, sunday, simplicate_context)
+
     existing = find_working_week(repo, monday, sunday)
     by_id = {str(row.get("id")): row for row in clockify_entries if row.get("id")}
     live_ids = set(by_id)
@@ -135,6 +138,7 @@ def prepare_mapping_work(
         "source_delta": source_delta_summary,
         "no_op": mode == "REFRESH" and not work_items and not removed and not requires_baseline,
         "summary": plan_summary(existing, source_delta={**delta, "missing_count": len(removed)}) if existing else None,
+        "simplicate_context": deepcopy(simplicate_context),
     }
 
 
@@ -148,6 +152,8 @@ def apply_mapping_decisions(
     rebuild: bool = False,
     simplicate_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    if simplicate_context is None:
+        simplicate_context = load_generation_snapshot(repo, monday, sunday)
     work = prepare_mapping_work(
         repo,
         clockify_entries,
