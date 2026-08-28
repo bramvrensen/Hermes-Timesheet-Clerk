@@ -1,6 +1,6 @@
 name: timesheet-clerk
-version: 0.7.11
-description: HERMES Timesheet Clerk tools, deterministic plan state, actionable review queue and guarded Simplicate task/day/week booking.
+version: 0.7.12
+description: HERMES Timesheet Clerk tools, deterministic plan state, actionable review queue, idempotent approvals and guarded Simplicate task/day/week booking.
 author: Bram van Rensen
 homepage: https://github.com/bramvrensen/Hermes-Timesheet-Clerk
 
