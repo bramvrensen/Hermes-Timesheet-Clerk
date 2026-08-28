@@ -14,19 +14,33 @@ from typing import Any
 def reflow_plan_days(plan: dict[str, Any]) -> dict[str, Any]:
     result = deepcopy(plan)
     entries = result.get("entries") or []
+    _reflow_entries(entries)
+    result["entries"] = entries
+
+    # Generate/Refresh already owns the authoritative Simplicate mapping state.
+    # Collapse AUTO rows that resolve to the exact same target, then schedule the
+    # reduced set once more. Human-reviewed PROPOSE/ASK rows are consolidated in
+    # the review flow where their preferred entry ID can be preserved safely.
+    from .consolidation import consolidate_reviewed_entries
+    consolidated = consolidate_reviewed_entries(result, auto_only=True)
+    if len(consolidated.get("entries") or []) != len(entries):
+        entries = consolidated.get("entries") or []
+        _reflow_entries(entries)
+        consolidated["entries"] = entries
+        return consolidated
+    return result
+
+
+def _reflow_entries(entries: list[dict[str, Any]]) -> None:
     days = sorted({str(row.get("date") or "") for row in entries if row.get("date")})
     for day in days:
         reflow_day(entries, day)
-    # Keep repository/UI order aligned with the canonical day schedule while
-    # leaving ignored rows visible after bookable rows for that day.
     entries.sort(key=lambda row: (
         str(row.get("date") or ""),
         1 if row.get("ignored") else 0,
         str(row.get("planned_start") or ""),
         str(row.get("entry_id") or ""),
     ))
-    result["entries"] = entries
-    return result
 
 
 def reflow_day(entries: list[dict[str, Any]], day: str) -> None:
