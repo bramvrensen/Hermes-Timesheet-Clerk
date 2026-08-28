@@ -11,24 +11,21 @@ from datetime import datetime, time, timedelta
 from typing import Any
 
 
-def reflow_plan_days(plan: dict[str, Any]) -> dict[str, Any]:
+def reflow_plan_days(plan: dict[str, Any], *, consolidate_auto: bool = True) -> dict[str, Any]:
     result = deepcopy(plan)
     entries = result.get("entries") or []
     _reflow_entries(entries)
     result["entries"] = entries
+
+    if not consolidate_auto:
+        return result
 
     # Generate/Refresh already owns the authoritative Simplicate mapping state.
     # Collapse AUTO rows that resolve to the exact same target, then schedule the
     # reduced set once more. Human-reviewed PROPOSE/ASK rows are consolidated in
     # the review flow where their preferred entry ID can be preserved safely.
     from .consolidation import consolidate_reviewed_entries
-    consolidated = consolidate_reviewed_entries(result, auto_only=True)
-    if len(consolidated.get("entries") or []) != len(entries):
-        entries = consolidated.get("entries") or []
-        _reflow_entries(entries)
-        consolidated["entries"] = entries
-        return consolidated
-    return result
+    return consolidate_reviewed_entries(result, auto_only=True, reflow=False)
 
 
 def _reflow_entries(entries: list[dict[str, Any]]) -> None:
@@ -48,8 +45,6 @@ def reflow_day(entries: list[dict[str, Any]], day: str) -> None:
     if not indexed:
         return
 
-    # Stable sort inside both groups: prior planned order first, then original
-    # source order/entry id as deterministic tie breakers.
     indexed.sort(key=lambda item: (
         1 if _is_billable(item[1]) else 0,
         str(item[1].get("planned_start") or (item[1].get("source") or {}).get("start") or ""),
