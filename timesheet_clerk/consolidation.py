@@ -1,10 +1,9 @@
-"""Consolidate adjacent reviewed booking rows without losing Clockify source coverage."""
+"""Consolidate same-day booking rows without losing Clockify source coverage."""
 from __future__ import annotations
 
 import hashlib
 import json
 from copy import deepcopy
-from datetime import datetime
 from typing import Any
 
 
@@ -13,11 +12,11 @@ _TIER_RANK = {"AUTO": 0, "PROPOSE": 1, "ASK": 2}
 
 
 def consolidate_reviewed_entries(plan: dict[str, Any], *, preferred_entry_id: str | None = None) -> dict[str, Any]:
-    """Merge adjacent functionally identical reviewed rows.
+    """Merge same-day rows that resolve to the exact same Simplicate target.
 
-    Consolidation is deliberately conservative. Both rows must be reviewed,
-    resolved, non-ignored, contiguous in planned time, point at exactly the same
-    booking target and represent the same Clockify work context.
+    AUTO rows are safe to consolidate immediately. PROPOSE/ASK rows must first be
+    human confirmed/corrected. Clockify descriptions do not affect booking
+    equivalence; all source IDs remain attached to the consolidated row.
     """
     result = deepcopy(plan)
     entries = list(result.get("entries") or [])
@@ -29,35 +28,39 @@ def consolidate_reviewed_entries(plan: dict[str, Any], *, preferred_entry_id: st
     ))
 
     merged: list[dict[str, Any]] = []
+    positions: dict[tuple[Any, ...], int] = {}
     for row in entries:
         current = deepcopy(row)
-        if merged and _can_merge(merged[-1], current):
-            merged[-1] = _merge_pair(merged[-1], current, preferred_entry_id=preferred_entry_id)
-        else:
-            merged.append(current)
+        key = _merge_key(current)
+        if key is not None and key in positions:
+            idx = positions[key]
+            merged[idx] = _merge_pair(merged[idx], current, preferred_entry_id=preferred_entry_id)
+            continue
+        if key is not None:
+            positions[key] = len(merged)
+        merged.append(current)
 
     result["entries"] = merged
     return result
 
 
-def _can_merge(left: dict[str, Any], right: dict[str, Any]) -> bool:
-    if left.get("ignored") or right.get("ignored"):
+def _merge_key(entry: dict[str, Any]) -> tuple[Any, ...] | None:
+    if not _merge_eligible(entry):
+        return None
+    return (str(entry.get("date") or ""),) + _booking_signature(entry)
+
+
+def _merge_eligible(entry: dict[str, Any]) -> bool:
+    if entry.get("ignored") or entry.get("review_state") == "skipped":
         return False
-    if left.get("reconciliation_state") == "BOOKED" or right.get("reconciliation_state") == "BOOKED":
+    if entry.get("reconciliation_state") == "BOOKED":
         return False
-    if left.get("review_state") not in _REVIEWED or right.get("review_state") not in _REVIEWED:
+    if entry.get("mapping_state") != "RESOLVED":
         return False
-    if left.get("mapping_state") != "RESOLVED" or right.get("mapping_state") != "RESOLVED":
-        return False
-    if str(left.get("date") or "") != str(right.get("date") or ""):
-        return False
-    if _parse(left.get("planned_end")) != _parse(right.get("planned_start")):
-        return False
-    if _booking_signature(left) != _booking_signature(right):
-        return False
-    if _source_signature(left) != _source_signature(right):
-        return False
-    return True
+    tier = str(entry.get("tier") or entry.get("overall_tier") or "ASK").upper()
+    if tier == "AUTO":
+        return True
+    return entry.get("review_state") in _REVIEWED
 
 
 def _merge_pair(left: dict[str, Any], right: dict[str, Any], *, preferred_entry_id: str | None) -> dict[str, Any]:
@@ -76,9 +79,7 @@ def _merge_pair(left: dict[str, Any], right: dict[str, Any], *, preferred_entry_
     base["clockify_source_ids"] = source_ids
     base["original_duration_seconds"] = float(left.get("original_duration_seconds") or 0) + float(right.get("original_duration_seconds") or 0)
     base["planned_duration_seconds"] = float(left.get("planned_duration_seconds") or 0) + float(right.get("planned_duration_seconds") or 0)
-    base["planned_start"] = left.get("planned_start")
-    base["planned_end"] = right.get("planned_end")
-    base["review_state"] = "corrected" if "corrected" in {left.get("review_state"), right.get("review_state")} else "confirmed"
+    base["review_state"] = _merged_review_state(left, right)
     base["tier"] = _stricter_tier(left, right)
     base["overall_tier"] = base["tier"]
     base["consolidated"] = True
@@ -86,8 +87,30 @@ def _merge_pair(left: dict[str, Any], right: dict[str, Any], *, preferred_entry_
         list(left.get("consolidated_entry_ids") or [left.get("entry_id")])
         + list(right.get("consolidated_entry_ids") or [right.get("entry_id")])
     )
+    base["source"] = _merged_source(left, right, base.get("source") or {})
     base["source_fingerprint"] = _fingerprint(base)
     return base
+
+
+def _merged_review_state(left: dict[str, Any], right: dict[str, Any]) -> str | None:
+    states = {left.get("review_state"), right.get("review_state")}
+    if "corrected" in states:
+        return "corrected"
+    if "confirmed" in states:
+        return "confirmed"
+    return None
+
+
+def _merged_source(left: dict[str, Any], right: dict[str, Any], base_source: dict[str, Any]) -> dict[str, Any]:
+    source = deepcopy(base_source)
+    descriptions: list[str] = []
+    for row in (left, right):
+        text = str((row.get("source") or {}).get("description") or "").strip()
+        if text and text not in descriptions:
+            descriptions.append(text)
+    if descriptions:
+        source["description"] = " + ".join(descriptions)
+    return source
 
 
 def _booking_signature(entry: dict[str, Any]) -> tuple[Any, ...]:
@@ -105,14 +128,6 @@ def _booking_signature(entry: dict[str, Any]) -> tuple[Any, ...]:
         _plain_id(mapping.get("hour_type_id")),
         billable,
     )
-
-
-def _source_signature(entry: dict[str, Any]) -> tuple[str, str, str]:
-    source = entry.get("source") or {}
-    description = " ".join(str(source.get("description") or "").casefold().split())
-    client = source.get("client") or {}
-    project = source.get("project") or {}
-    return (description, _plain_id(client) or _name(client), _plain_id(project) or _name(project))
 
 
 def _is_billable(entry: dict[str, Any]) -> bool:
@@ -138,26 +153,11 @@ def _fingerprint(entry: dict[str, Any]) -> str:
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
-def _parse(value: Any) -> datetime | None:
-    if not value:
-        return None
-    try:
-        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-    except ValueError:
-        return None
-
-
 def _plain_id(value: Any) -> str:
     if isinstance(value, dict):
         value = value.get("id")
     text = str(value or "")
     return text.split(":", 1)[1] if ":" in text else text
-
-
-def _name(value: Any) -> str:
-    if not isinstance(value, dict):
-        return str(value or "").casefold()
-    return str(value.get("name") or value.get("title") or value.get("label") or "").casefold()
 
 
 def _unique_strings(values: list[Any]) -> list[str]:
