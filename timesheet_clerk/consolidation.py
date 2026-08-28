@@ -11,17 +11,8 @@ _REVIEWED = {"confirmed", "corrected"}
 _TIER_RANK = {"AUTO": 0, "PROPOSE": 1, "ASK": 2}
 
 
-def consolidate_reviewed_entries(plan: dict[str, Any], *, preferred_entry_id: str | None = None, auto_only: bool = False) -> dict[str, Any]:
-    """Merge same-day rows that resolve to the exact same Simplicate target.
-
-    AUTO rows are safe to consolidate immediately. PROPOSE/ASK rows must first be
-    human confirmed/corrected. Clockify descriptions do not affect booking
-    equivalence; all source IDs remain attached to the consolidated row.
-
-    ``auto_only`` is used by deterministic scheduling during Generate/Refresh so
-    automatic rows can collapse without consuming a human-review entry ID before
-    the review flow gets a chance to preserve it explicitly.
-    """
+def consolidate_reviewed_entries(plan: dict[str, Any], *, preferred_entry_id: str | None = None, auto_only: bool = False, reflow: bool = True) -> dict[str, Any]:
+    """Merge same-day rows that resolve to the exact same Simplicate target."""
     result = deepcopy(plan)
     entries = list(result.get("entries") or [])
     entries.sort(key=lambda row: (
@@ -45,6 +36,9 @@ def consolidate_reviewed_entries(plan: dict[str, Any], *, preferred_entry_id: st
         merged.append(current)
 
     result["entries"] = merged
+    if reflow and len(merged) != len(entries):
+        from .scheduling import reflow_plan_days
+        result = reflow_plan_days(result, consolidate_auto=False)
     return result
 
 
