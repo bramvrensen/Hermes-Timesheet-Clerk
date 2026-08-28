@@ -11,12 +11,16 @@ _REVIEWED = {"confirmed", "corrected"}
 _TIER_RANK = {"AUTO": 0, "PROPOSE": 1, "ASK": 2}
 
 
-def consolidate_reviewed_entries(plan: dict[str, Any], *, preferred_entry_id: str | None = None) -> dict[str, Any]:
+def consolidate_reviewed_entries(plan: dict[str, Any], *, preferred_entry_id: str | None = None, auto_only: bool = False) -> dict[str, Any]:
     """Merge same-day rows that resolve to the exact same Simplicate target.
 
     AUTO rows are safe to consolidate immediately. PROPOSE/ASK rows must first be
     human confirmed/corrected. Clockify descriptions do not affect booking
     equivalence; all source IDs remain attached to the consolidated row.
+
+    ``auto_only`` is used by deterministic scheduling during Generate/Refresh so
+    automatic rows can collapse without consuming a human-review entry ID before
+    the review flow gets a chance to preserve it explicitly.
     """
     result = deepcopy(plan)
     entries = list(result.get("entries") or [])
@@ -31,7 +35,7 @@ def consolidate_reviewed_entries(plan: dict[str, Any], *, preferred_entry_id: st
     positions: dict[tuple[Any, ...], int] = {}
     for row in entries:
         current = deepcopy(row)
-        key = _merge_key(current)
+        key = _merge_key(current, auto_only=auto_only)
         if key is not None and key in positions:
             idx = positions[key]
             merged[idx] = _merge_pair(merged[idx], current, preferred_entry_id=preferred_entry_id)
@@ -44,13 +48,13 @@ def consolidate_reviewed_entries(plan: dict[str, Any], *, preferred_entry_id: st
     return result
 
 
-def _merge_key(entry: dict[str, Any]) -> tuple[Any, ...] | None:
-    if not _merge_eligible(entry):
+def _merge_key(entry: dict[str, Any], *, auto_only: bool) -> tuple[Any, ...] | None:
+    if not _merge_eligible(entry, auto_only=auto_only):
         return None
     return (str(entry.get("date") or ""),) + _booking_signature(entry)
 
 
-def _merge_eligible(entry: dict[str, Any]) -> bool:
+def _merge_eligible(entry: dict[str, Any], *, auto_only: bool) -> bool:
     if entry.get("ignored") or entry.get("review_state") == "skipped":
         return False
     if entry.get("reconciliation_state") == "BOOKED":
@@ -60,6 +64,8 @@ def _merge_eligible(entry: dict[str, Any]) -> bool:
     tier = str(entry.get("tier") or entry.get("overall_tier") or "ASK").upper()
     if tier == "AUTO":
         return True
+    if auto_only:
+        return False
     return entry.get("review_state") in _REVIEWED
 
 
