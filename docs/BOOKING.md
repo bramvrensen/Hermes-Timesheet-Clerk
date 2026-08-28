@@ -1,5 +1,13 @@
 # Simplicate booking
 
+## 0.7.12 approval idempotency and visible batch blockers
+
+`READY` is a reviewed, not-yet-booked state and is visually distinct from both `AUTO` and grey `BOOKED` rows.
+
+When `Book day` or `Book week` is disabled, the UI now lists the exact blocking entries and the reason returned by the booking-readiness check. This makes unresolved review state, incomplete targets and other blockers explicit instead of showing only a disabled button.
+
+Approving the same unchanged `plan_id + revision` is idempotent. The first approval creates an immutable snapshot with `approved_at`; subsequent approval attempts compare the actual plan content while ignoring the timestamp-only `approved_at` field and return the existing snapshot when content is unchanged. A genuine content mismatch for the same revision still raises a conflict.
+
 ## 0.7.10 task, day and week booking
 
 0.7.10 extends the proven thin `Book task` boundary to `Book day` and `Book week`.
@@ -8,7 +16,7 @@ Batch booking only includes open, non-ignored entries. Every open entry in the s
 
 A day/week preflight performs one booked-hours read across the selected date range and checks every selected payload for receipts and probable duplicates. Any probable duplicate blocks the whole batch before writes. After explicit confirmation, rows are posted sequentially and each successful POST gets its own receipt and immediate readback verification. A rejected POST writes no receipt, remains open for review, and does not prevent later independent rows from being attempted.
 
-The Review page now remembers the entry anchor before opening its dialog so closing/re-running the editor returns the main page to the same time-entry card rather than the top of the week.
+The Review page remembers the entry anchor before opening its dialog so closing/re-running the editor returns the main page to the same time-entry card rather than the top of the week.
 
 ## 0.7.9 Generate / Refresh is the Simplicate synchronization boundary
 
