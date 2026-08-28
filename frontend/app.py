@@ -20,6 +20,8 @@ from timesheet_clerk.ui_single_booking import render_task_booking
 from timesheet_clerk.ui_sync import clear_sync_status, sync_status
 from timesheet_clerk.ui_time import install_review_time_formatting
 
+_REVIEWED_STATES = {"confirmed", "corrected"}
+
 
 def _current_week() -> tuple[str, str]:
     tz = ZoneInfo(os.environ.get("TZ") or "Europe/Amsterdam")
@@ -27,6 +29,51 @@ def _current_week() -> tuple[str, str]:
     monday = today - timedelta(days=today.weekday())
     sunday = monday + timedelta(days=6)
     return monday.isoformat(), sunday.isoformat()
+
+
+def _pending_review_entries(entries: list[dict]) -> list[dict]:
+    return [
+        entry for entry in entries
+        if not entry.get("ignored")
+        and entry.get("review_state") != "skipped"
+        and str(entry.get("tier") or entry.get("overall_tier") or "ASK").upper() in {"PROPOSE", "ASK"}
+        and entry.get("review_state") not in _REVIEWED_STATES
+    ]
+
+
+def _display_status(entry: dict) -> str:
+    """Visual state is workflow state; original tier remains untouched audit data."""
+    if entry.get("ignored") or entry.get("review_state") == "skipped": return "SKIP"
+    if entry.get("reconciliation_state") == "BOOKED": return "BOOKED"
+    tier = str(entry.get("tier") or entry.get("overall_tier") or "ASK").upper()
+    if tier in {"PROPOSE", "ASK"} and entry.get("review_state") in _REVIEWED_STATES: return "READY"
+    return tier
+
+
+def _install_reviewed_css() -> None:
+    st.markdown("""<style>
+    .tc-entry.ready{border-left-color:#6e7781;background:var(--card)}
+    .tc-badge.ready{background:#6e7781;color:white}
+    </style>""", unsafe_allow_html=True)
+
+
+def _render_review_queue(plan: dict) -> None:
+    pending = _pending_review_entries(list(plan.get("entries") or []))
+    if not pending: return
+    noun = "entry" if len(pending) == 1 else "entries"
+    context = plan.get("review_context") or {}
+    with st.expander(f"🔎 {len(pending)} {noun} still need review", expanded=True):
+        for entry in pending:
+            tier = str(entry.get("tier") or entry.get("overall_tier") or "ASK").upper()
+            when = f"{entry.get('date') or ''} · {review._format_hm(entry.get('planned_start'))}–{review._format_hm(entry.get('planned_end'))}"
+            label = review._entry_label(entry)
+            cols = st.columns([1.4, 4.8, .8, 1])
+            cols[0].caption(when)
+            cols[1].write(label)
+            cols[2].write(tier)
+            if cols[3].button("Review", key=f"queue-review-{entry['entry_id']}", use_container_width=True):
+                st.session_state["scroll_to_entry"] = entry["entry_id"]
+                review._entry_dialog(plan["plan_id"], entry["entry_id"], context)
 
 
 def _render_job_status() -> None:
@@ -91,15 +138,12 @@ def _editor_with_task_booking(plan: dict, entry: dict) -> None:
 
 
 def _entry_dialog_with_scroll(plan_id: str, entry_id: str, review_context: dict) -> None:
-    # A Streamlit dialog reruns the page. Remember its anchor before opening so the
-    # underlying page returns to the same card when the dialog closes or booking reruns.
     st.session_state["scroll_to_entry"] = entry_id
     review._timesheet_clerk_base_entry_dialog(plan_id, entry_id, review_context)
 
 
 def _render_day_with_booking(plan: dict, day: str, entries: list[dict]) -> None:
-    # Keep the existing day rendering and replace its formerly disabled Book day control.
-    clocked=sum(review._hours(e.get("original_duration_seconds")) for e in entries); workable=sum(review._hours(e.get("planned_duration_seconds")) for e in entries if not e.get("ignored")); booked=sum(review._hours(e.get("planned_duration_seconds")) for e in entries if e.get("reconciliation_state")=="BOOKED"); pending=review._pending(entries); header,action=st.columns([5,1])
+    clocked=sum(review._hours(e.get("original_duration_seconds")) for e in entries); workable=sum(review._hours(e.get("planned_duration_seconds")) for e in entries if not e.get("ignored")); booked=sum(review._hours(e.get("planned_duration_seconds")) for e in entries if e.get("reconciliation_state")=="BOOKED"); pending=len(_pending_review_entries(entries)); header,action=st.columns([5,1])
     with header: st.markdown(f"<div class='tc-day-title'>{review.html.escape(day)}</div><div class='tc-day-meta'>Clocked {clocked:.2f}h · Workable {workable:.2f}h · Booked {booked:.2f}h · {'ready' if not pending else f'{pending} review'}</div>",unsafe_allow_html=True)
     with action: render_day_booking(review.repo, plan, day, entries)
     context=plan.get("review_context") or {}
@@ -111,12 +155,11 @@ def _render_day_with_booking(plan: dict, day: str, entries: list[dict]) -> None:
 
 
 def _review_page_with_week_booking(stored: dict, plan: dict) -> None:
+    _render_review_queue(plan)
     review._timesheet_clerk_base_review_page(stored, plan)
-    # Base page still renders its disabled legacy week button. The active 0.7.10
-    # control lives immediately below it until the legacy review module is flattened.
     if st.session_state.get("timesheet_view", "week") == "week":
         st.markdown("#### Batch booking")
-        render_week_booking(review.repo, repo_plan := review.repo.get_latest(stored["plan_id"]))
+        render_week_booking(review.repo, review.repo.get_latest(stored["plan_id"]))
 
 
 if not hasattr(review, "_timesheet_clerk_base_entry_dialog"): review._timesheet_clerk_base_entry_dialog = review._entry_dialog
@@ -124,6 +167,7 @@ if not hasattr(review, "_timesheet_clerk_base_review_page"): review._timesheet_c
 review._trigger_planner = _trigger_refresh
 review._sync_status_widget = lambda: None
 review._direct_editor = _direct_editor_scoped
+review._status = _display_status
 review._editor = _editor_with_task_booking
 review._render_day = _render_day_with_booking
 review._review_page = _review_page_with_week_booking
@@ -132,14 +176,12 @@ ui_admin._fresh_start_active_week = _safe_rebuild_active_week
 
 
 def main() -> None:
-    review.require_login()
+    review.require_login(); _install_reviewed_css()
     flash = st.session_state.pop("booking_flash", None)
     if flash: st.success(str(flash))
     failures = st.session_state.pop("booking_failures", None)
-    if failures:
-        st.error("Some registrations failed and remain open for review: " + "; ".join(f"{row.get('entry_id')}: {row.get('message')}" for row in failures))
-    try:
-        ensure_active_plan(review.repo); stored = review._select_plan()
+    if failures: st.error("Some registrations failed and remain open for review: " + "; ".join(f"{row.get('entry_id')}: {row.get('message')}" for row in failures))
+    try: ensure_active_plan(review.repo); stored = review._select_plan()
     except PlanNotFound:
         st.markdown("## ⏱️ Timesheet Clerk"); build_tab, config_tab, skill_tab, state_tab = st.tabs(["Generate", "Configuration", "SKILL", "State"])
         with build_tab: _bootstrap_current_week()
