@@ -12,7 +12,7 @@ import review_app as review
 import timesheet_clerk.ui_admin as ui_admin
 from timesheet_clerk.state_selection import ensure_active_plan, has_working_week
 from timesheet_clerk.storage import PlanNotFound
-from timesheet_clerk.ui_batch_booking import render_day_booking, render_week_booking
+from timesheet_clerk.ui_batch_booking import render_day_booking
 from timesheet_clerk.ui_booking import render_booking
 from timesheet_clerk.ui_choices import editor_hour_type_choices
 from timesheet_clerk.ui_planner import start_planner
@@ -121,14 +121,13 @@ def _render_day_with_booking(plan:dict,day:str,entries:list[dict])->None:
         if st.button("Review / edit",key=f"edit-{entry['entry_id']}"):st.session_state["scroll_to_entry"]=entry["entry_id"];review._entry_dialog(plan["plan_id"],entry["entry_id"],context)
 
 
-def _review_page_with_week_booking(stored:dict,plan:dict)->None:
+def _review_page_with_queue(stored:dict,plan:dict)->None:
     _render_review_queue(plan);review._timesheet_clerk_base_review_page(stored,plan)
-    if st.session_state.get("timesheet_view","week")=="week":st.markdown("#### Batch booking");render_week_booking(review.repo,review.repo.get_latest(stored["plan_id"]))
 
 
 if not hasattr(review,"_timesheet_clerk_base_entry_dialog"):review._timesheet_clerk_base_entry_dialog=review._entry_dialog
 if not hasattr(review,"_timesheet_clerk_base_review_page"):review._timesheet_clerk_base_review_page=review._review_page
-review._trigger_planner=_trigger_refresh;review._sync_status_widget=lambda:None;review._direct_editor=_direct_editor_scoped;review._status=_display_status;review._editor=_editor_with_task_booking;review._render_day=_render_day_with_booking;review._review_page=_review_page_with_week_booking
+review._trigger_planner=_trigger_refresh;review._sync_status_widget=lambda:None;review._direct_editor=_direct_editor_scoped;review._status=_display_status;review._editor=_editor_with_task_booking;review._render_day=_render_day_with_booking;review._review_page=_review_page_with_queue
 install_review_time_formatting(review);ui_admin._fresh_start_active_week=_safe_rebuild_active_week
 
 
