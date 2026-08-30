@@ -1,5 +1,11 @@
 # Simplicate booking
 
+## 0.7.17 presentation patch no longer shadows booking controls
+
+The final root cause of the permanently disabled `Book day`/`Book week` controls was a second renderer inside `timesheet_clerk/ui_time.py`. `install_review_time_formatting(...)` was intended to change duration presentation, but it also replaced `review._render_day` and `review._review_page` with copied legacy renderers containing hard-coded disabled booking buttons. Because the formatting patch ran after the canonical booking wiring, it silently replaced the correct guarded controls at runtime.
+
+`ui_time.py` is now presentation-only. It patches `_entry_summary` to keep human-readable durations, but it no longer owns day rendering, week rendering, approval controls or booking controls. The canonical batch booking flow therefore remains in `frontend/review_app.py` / `timesheet_clerk/ui_batch_booking.py`. Regression tests explicitly fail if `ui_time.py` starts overriding `_render_day` or `_review_page`, or if disabled booking placeholders are reintroduced there.
+
 ## 0.7.16 canonical batch booking UI
 
 `Book day` and `Book week` now live in the canonical `frontend/review_app.py` render path itself. The previous architecture left hard-coded `disabled=True` placeholder buttons in `review_app.py` and depended on `frontend/app.py` monkeypatches to replace them at runtime. That split made deployments fragile and allowed a permanently disabled legacy control to remain visible even while the batch-booking implementation was correct elsewhere.
