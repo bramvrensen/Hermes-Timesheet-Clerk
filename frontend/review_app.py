@@ -22,6 +22,7 @@ from timesheet_clerk.runtime import read_config
 from timesheet_clerk.storage import PlanNotFound, PlanRepository, StateConflict
 from timesheet_clerk.ui_admin import render_config, render_skill, render_state
 from timesheet_clerk.ui_auth import logout, require_login
+from timesheet_clerk.ui_batch_booking import render_day_booking, render_week_booking
 from timesheet_clerk.ui_context import load_review_context
 from timesheet_clerk.ui_sync import clear_sync_status, launch_sync, sync_status
 
@@ -220,7 +221,7 @@ def _entry_dialog(plan_id: str, entry_id: str, review_context: dict[str, Any]) -
 def _render_day(plan: dict[str, Any], day: str, entries: list[dict[str, Any]]) -> None:
     clocked=sum(_hours(e.get("original_duration_seconds")) for e in entries); workable=sum(_hours(e.get("planned_duration_seconds")) for e in entries if not e.get("ignored")); booked=sum(_hours(e.get("planned_duration_seconds")) for e in entries if e.get("reconciliation_state")=="BOOKED"); pending=_pending(entries); header,action=st.columns([5,1])
     with header: st.markdown(f"<div class='tc-day-title'>{html.escape(day)}</div><div class='tc-day-meta'>Clocked {clocked:.2f}h · Workable {workable:.2f}h · Booked {booked:.2f}h · {'ready' if not pending else f'{pending} review'}</div>",unsafe_allow_html=True)
-    with action: st.button("Book day",key=f"book-{day}",disabled=True,use_container_width=True)
+    with action: render_day_booking(repo,plan,day,entries)
     context=plan.get("review_context") or {}
     for entry in entries:
         _entry_summary(plan,entry)
@@ -329,7 +330,7 @@ def _review_page(stored: dict[str, Any], plan: dict[str, Any]) -> None:
             if st.button("Approve week",disabled=bool(pending),use_container_width=True):
                 try: snapshot=repo.approve_snapshot(stored["plan_id"],int(stored["revision"])); st.success(f"Approved revision {snapshot['revision']}")
                 except StateConflict as exc: st.error(str(exc))
-        with book: st.button("Book approved week",type="primary",disabled=True,use_container_width=True)
+        with book: render_week_booking(repo,plan)
     _restore_scroll()
 
 
