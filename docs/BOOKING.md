@@ -1,5 +1,13 @@
 # Simplicate booking
 
+## 0.7.16 canonical batch booking UI
+
+`Book day` and `Book week` now live in the canonical `frontend/review_app.py` render path itself. The previous architecture left hard-coded `disabled=True` placeholder buttons in `review_app.py` and depended on `frontend/app.py` monkeypatches to replace them at runtime. That split made deployments fragile and allowed a permanently disabled legacy control to remain visible even while the batch-booking implementation was correct elsewhere.
+
+The canonical day renderer now calls `render_day_booking(...)` directly and the canonical week footer calls `render_week_booking(...)` directly. `frontend/app.py` no longer adds a second week-booking control. Regression tests fail if the old hard-coded disabled controls return or if the wrapper renders a duplicate week button.
+
+The batch button is disabled only when the selected day/week contains no open entries at all. When open entries exist, clicking the button always opens an eligibility view. Eligible entries proceed to preflight; ineligible entries remain in review with their explicit reason.
+
 ## 0.7.12 approval idempotency and visible batch blockers
 
 `READY` is a reviewed, not-yet-booked state and is visually distinct from both `AUTO` and grey `BOOKED` rows.
