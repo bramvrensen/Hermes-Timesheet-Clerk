@@ -16,7 +16,7 @@ RUN mkdir -p /opt/hermes \
        "https://codeload.github.com/NousResearch/hermes-agent/tar.gz/${HERMES_REVISION}" -o /tmp/hermes.tar.gz \
     && tar -xzf /tmp/hermes.tar.gz --strip-components=1 -C /opt/hermes \
     && rm /tmp/hermes.tar.gz \
-    && cd /opt/hermes && uv sync --locked --no-dev \
+    && cd /opt/hermes && uv sync --locked --no-dev --python /usr/local/bin/python --no-python-downloads \
     && /opt/hermes/.venv/bin/hermes --help >/dev/null
 
 WORKDIR /opt/timesheet-clerk
