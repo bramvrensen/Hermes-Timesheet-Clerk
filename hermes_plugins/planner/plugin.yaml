@@ -1,0 +1,6 @@
+name: timesheet-clerk-planner
+version: 2.0.0
+description: Private Timesheet Clerk mapping planner; no booking or server-management tools.
+provides_tools:
+  - timesheet_mapping_work
+  - timesheet_mapping_submit

@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from .contracts import ContractError, utc_now, validate_feedback_event, validate_plan
+from .locking import locked_repository
 
 DIR_MODE = 0o770
 FILE_MODE = 0o660
@@ -34,6 +35,9 @@ def default_state_dir() -> Path:
     configured = str(os.environ.get("TIMESHEET_CLERK_STATE_DIR") or "").strip()
     if configured:
         return Path(configured).expanduser()
+    from .deployment import standalone
+    if standalone():
+        return Path("/data/clerk")
     hermes_home = str(os.environ.get("HERMES_HOME") or "").strip()
     base = Path(hermes_home).expanduser() if hermes_home else Path.home() / ".hermes"
     return base / "timesheet-clerk"
@@ -137,6 +141,7 @@ class PlanRepository:
         if os.geteuid() == 0:
             repair_shared_permissions(self.root)
 
+    @locked_repository
     def create(self, plan: dict[str, Any], *, make_active: bool = True) -> dict[str, Any]:
         candidate = validate_plan(plan)
         plan_id = candidate["plan_id"]
@@ -149,6 +154,7 @@ class PlanRepository:
             self._write_active_pointer(candidate)
         return deepcopy(candidate)
 
+    @locked_repository
     def save_revision(self, plan: dict[str, Any], *, expected_revision: int, make_active: bool = True) -> dict[str, Any]:
         candidate = validate_plan(plan)
         plan_id = candidate["plan_id"]
@@ -237,6 +243,7 @@ class PlanRepository:
         plan["status"] = "IN_REVIEW"
         return self.save_revision(plan, expected_revision=revision)
 
+    @locked_repository
     def approve_snapshot(self, plan_id: str, revision: int) -> dict[str, Any]:
         self._assert_active(plan_id, revision)
         plan = validate_plan(self.get_revision(plan_id, revision))

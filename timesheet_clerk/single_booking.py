@@ -3,12 +3,16 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import datetime, timezone
+import json
+import os
 from typing import Any
 
 from .booking import _entry_payload, _existing_projection, _looks_like_same_registration, _post_hours, _receipt_entry_ids
 from .config import SimplicateConfig
 from .simplicate import SimplicateClient
 from .storage import PlanRepository, StateConflict
+from .locking import locked_repository
+from .deployment import standalone
 
 
 def task_booking_ready(entry: dict[str, Any]) -> tuple[bool, str]:
@@ -34,6 +38,18 @@ def _entry_for_id(plan: dict[str, Any], entry_id: str) -> dict[str, Any]:
     return entry
 
 
+def _receipted_source_ids(repo: PlanRepository) -> set[str]:
+    """Receipts survive plan replacement; Clockify identity still prevents a duplicate."""
+    result: set[str] = set()
+    for path in repo.receipts_dir.glob("*.json"):
+        try:
+            receipt = json.loads(path.read_text(encoding="utf-8"))
+            result.update(str(value) for value in receipt.get("clockify_source_ids") or [])
+        except (OSError, ValueError, AttributeError):
+            continue
+    return result
+
+
 def preview_single_entry(repo: PlanRepository, plan_id: str, entry_id: str) -> dict[str, Any]:
     """Perform only the duplicate preflight for a validated persisted plan entry."""
     plan = repo.get_latest(plan_id)
@@ -44,7 +60,7 @@ def preview_single_entry(repo: PlanRepository, plan_id: str, entry_id: str) -> d
 
     client = SimplicateClient(SimplicateConfig.from_env())
     payload = _entry_payload(entry, client.config.employee_id)
-    receipted = entry_id in _receipt_entry_ids(repo, plan_id)
+    receipted = entry_id in _receipt_entry_ids(repo, plan_id) or bool(set(entry.get("clockify_source_ids") or []).intersection(_receipted_source_ids(repo)))
     day = str(entry.get("date") or "")[:10]
     booked = client.get_booked_hours(day, day)
     matches = [_existing_projection(item) for item in booked if _looks_like_same_registration(payload, item)]
@@ -77,12 +93,13 @@ def preview_entry_batch(repo: PlanRepository, plan_id: str, entry_ids: list[str]
     dates = [str(entry.get("date") or "")[:10] for entry in entries]
     booked = client.get_booked_hours(min(dates), max(dates))
     receipted = _receipt_entry_ids(repo, plan_id)
+    booked_sources = _receipted_source_ids(repo)
     rows: list[dict[str, Any]] = []
     for entry in entries:
         entry_id = str(entry["entry_id"])
         payload = payloads[entry_id]
         matches = [_existing_projection(item) for item in booked if _looks_like_same_registration(payload, item)]
-        status = "already_booked" if entry_id in receipted else "possible_duplicate" if matches else "ready"
+        status = "already_booked" if entry_id in receipted or set(entry.get("clockify_source_ids") or []).intersection(booked_sources) else "possible_duplicate" if matches else "ready"
         rows.append({"entry_id": entry_id, "entry": deepcopy(entry), "payload": payload, "status": status, "matches": matches})
     return {
         "plan_id": plan_id,
@@ -110,7 +127,10 @@ def _validate_prepared_preview(repo: PlanRepository, plan_id: str, entry_id: str
 
 def _write_and_verify(repo: PlanRepository, plan_id: str, revision: Any, entry: dict[str, Any], payload: dict[str, Any], client: SimplicateClient) -> dict[str, Any]:
     entry_id = str(entry["entry_id"])
-    response = _post_hours(client.config, payload)
+    from .booking_attempts import guarded_post
+    if set(entry.get("clockify_source_ids") or []).intersection(_receipted_source_ids(repo)):
+        raise StateConflict("These Clockify sources already have a Timesheet Clerk booking receipt, including in an earlier plan.")
+    response = guarded_post(repo, plan_id, entry_id, payload, lambda: _post_hours(client.config, payload), source_ids=entry.get("clockify_source_ids") or [])
     timestamp = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     receipt = {
         "timestamp": timestamp, "plan_id": plan_id, "revision": revision, "entry_id": entry_id,
@@ -122,7 +142,11 @@ def _write_and_verify(repo: PlanRepository, plan_id: str, revision: Any, entry: 
     booked = client.get_booked_hours(day, day)
     matches = [item for item in booked if _looks_like_same_registration(payload, item)]
     if not matches:
-        return {"success": False, "posted": True, "verified": False, "entry_id": entry_id, "receipt": str(receipt_path), "message": "Simplicate accepted the POST, but Clerk could not verify it by readback. Receipt preserved; retry is blocked."}
+        return {"success": False, "posted": True, "verified": False, "entry_id": entry_id, "receipt": str(receipt_path), "message": "Simplicate accepted the POST, but Timesheet Clerk could not verify it by readback. Receipt preserved; retry is blocked."}
+
+    from .storage import _atomic_write_json
+    receipt.update(verification_state="VERIFIED", simplicate_booking_id=matches[0].get("id"))
+    _atomic_write_json(receipt_path, receipt, root=repo.root)
 
     latest = repo.get_latest(plan_id)
     persisted = _entry_for_id(latest, entry_id)
@@ -134,7 +158,16 @@ def _write_and_verify(repo: PlanRepository, plan_id: str, revision: Any, entry: 
     return {"success": True, "posted": True, "verified": True, "plan_id": plan_id, "revision": saved["revision"], "entry_id": entry_id, "simplicate_booking_id": matches[0].get("id"), "receipt": str(receipt_path), "message": "Booked and verified in Simplicate."}
 
 
+def _require_writes() -> None:
+    from .booking import WRITE_ENV, write_enabled
+    # Preserve the legacy default, while making the V2 installation's switch authoritative.
+    if (standalone() or WRITE_ENV in os.environ) and not write_enabled():
+        raise StateConflict("Booking is disabled in the Timesheet Clerk installation settings.")
+
+
+@locked_repository
 def execute_single_entry_booking(repo: PlanRepository, plan_id: str, entry_id: str, *, prepared_preview: dict[str, Any] | None = None) -> dict[str, Any]:
+    _require_writes()
     preview = deepcopy(prepared_preview) if prepared_preview is not None else preview_single_entry(repo, plan_id, entry_id)
     if prepared_preview is not None:
         _validate_prepared_preview(repo, plan_id, entry_id, preview)
@@ -148,8 +181,10 @@ def execute_single_entry_booking(repo: PlanRepository, plan_id: str, entry_id: s
     return _write_and_verify(repo, plan_id, preview["revision"], preview["entry"], preview["payload"], client)
 
 
+@locked_repository
 def execute_entry_batch(repo: PlanRepository, plan_id: str, prepared_preview: dict[str, Any]) -> dict[str, Any]:
     """Book a preflighted day/week sequentially; failures stay reviewable and do not stop later rows."""
+    _require_writes()
     latest = repo.get_latest(plan_id)
     if str(prepared_preview.get("plan_id") or "") != plan_id or int(prepared_preview.get("revision") or -1) != int(latest.get("revision") or -2):
         raise StateConflict("This plan changed after booking preflight. Re-open the batch booking action and validate again.")

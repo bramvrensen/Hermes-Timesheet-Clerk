@@ -252,7 +252,7 @@ def register(ctx) -> None:
     ), handler=handle_mapping_prepare)
     ctx.register_tool(name="timesheet_mapping_apply", toolset=TOOLSET, schema=_schema(
         "timesheet_mapping_apply",
-        "Apply mapping decisions to deterministic Clerk state. Never accepts a plan payload. Re-fetches Clockify, validates complete decisions and atomically creates or revises the week.",
+        "Apply mapping decisions to deterministic Timesheet Clerk state. Never accepts a plan payload. Re-fetches Clockify, validates complete decisions and atomically creates or revises the week.",
         {
             "monday":{"type":"string"},"sunday":{"type":"string"},"rebuild":{"type":"boolean"},
             "decisions":{"type":"array","items":{"type":"object","properties":{

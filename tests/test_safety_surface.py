@@ -1,11 +1,15 @@
 from pathlib import Path
 
 
-def test_manifest_exposes_decisions_api_not_plan_write_tools():
+def test_v2_manifest_exposes_connection_only():
     root = Path(__file__).resolve().parents[1]
     manifest = (root / "plugin.yaml").read_text(encoding="utf-8")
-    assert "timesheet_mapping_prepare" in manifest
-    assert "timesheet_mapping_apply" in manifest
+    assert "timesheet_clerk_status" in manifest
+    assert "timesheet_clerk_generate" in manifest
+    assert "timesheet_clerk_job" in manifest
+    assert "CLOCKIFY_API_KEY" not in manifest
+    assert "SIMPLICATE_API_KEY" not in manifest
+    assert "timesheet_mapping_apply" not in manifest
     assert "timesheet_plan_create" not in manifest
     assert "timesheet_plan_sync" not in manifest
     assert "timesheet_plan_fresh_start" not in manifest

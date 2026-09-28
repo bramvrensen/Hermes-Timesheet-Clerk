@@ -26,6 +26,10 @@ def planner_prompt(monday: str, sunday: str, *, rebuild: bool) -> str:
 
 
 def start_planner(root: Path, monday: str, sunday: str, *, rebuild: bool) -> dict[str, Any]:
+    from .deployment import standalone
+    if standalone():
+        from .jobs import launch_job
+        return launch_job(root, monday, sunday, rebuild=rebuild)
     cfg = read_config()
     profile = str(cfg.get("planner_profile") or "atlas")
     clear_sync_status(root)

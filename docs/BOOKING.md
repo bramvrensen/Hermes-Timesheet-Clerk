@@ -62,6 +62,6 @@ Direct/ad-hoc booking omits `assignment_id`. Both modes send `billable`, `start_
 
 ## Error handling and idempotency
 
-Simplicate validation failures are shown with HTTP status and parsed response details without exposing authentication headers or secrets. A rejected POST does not write a Clerk receipt.
+Simplicate validation failures are shown with HTTP status and parsed response details without exposing authentication headers or secrets. A rejected POST does not write a Timesheet Clerk receipt.
 
-A receipt for the same `plan_id + entry_id` prevents another POST. Clerk also blocks a first POST when a probable matching Simplicate registration already exists. Receipts preserve plan/revision/entry identity, Clockify source IDs, the exact Simplicate request/response and verification state.
+A receipt for the same `plan_id + entry_id` prevents another POST. Timesheet Clerk also blocks a first POST when a probable matching Simplicate registration already exists. Receipts preserve plan/revision/entry identity, Clockify source IDs, the exact Simplicate request/response and verification state.

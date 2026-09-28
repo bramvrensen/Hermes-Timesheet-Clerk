@@ -18,6 +18,7 @@ from .runtime import (
 )
 from .storage import PlanNotFound, PlanRepository, StateConflict, repair_shared_permissions
 from .ui_sync import clear_sync_status, launch_sync
+from .deployment import standalone, PROFILE
 
 
 _PLUGIN_ROOT = Path(__file__).resolve().parents[1]
@@ -89,7 +90,7 @@ def render_config(repo: PlanRepository, default_skill: Path) -> None:
     cfg = read_config()
     c1, c2 = st.columns(2)
     with c1:
-        planner_profile = st.text_input("Planner profile", value=str(cfg["planner_profile"]))
+        planner_profile = PROFILE if standalone() else st.text_input("Planner profile", value=str(cfg["planner_profile"]))
         contract_hours = st.number_input("Default contract hours", min_value=0.0, step=0.5, value=float(cfg["contract_hours_default"]))
         preferred_hour_type = st.text_input(
             "Preferred hour type",
@@ -122,7 +123,7 @@ def render_config(repo: PlanRepository, default_skill: Path) -> None:
                 "booked_artifact_retention_days": int(retention),
                 "purge_after_successful_booking": purge_after,
             })
-            st.success(f"Saved runtime config and ensured shared SKILL discovery for planner profile {saved['planner_profile']}.")
+            st.success("Timesheet Clerk configuration saved." if standalone() else f"Saved runtime config for {saved['planner_profile']}.")
         except Exception as exc:
             st.error(f"Configuration was not fully applied: {exc}")
 
@@ -146,14 +147,14 @@ def render_config(repo: PlanRepository, default_skill: Path) -> None:
         marker = repo.root / "frontend-restart.request"
         marker.write_text("restart\n", encoding="utf-8")
         st.success("Frontend restart requested. The managed launcher will restart Streamlit within a few seconds.")
-    st.caption("Plugin updates are driven by the Hermes-native `timesheet_update` tool. The displayed version is read directly from the installed plugin manifest.")
+    st.caption("Update Timesheet Clerk through its installation program. Your saved data is retained." if standalone() else "Plugin updates use timesheet_update.")
 
     _fresh_start_active_week(repo)
 
 
 def render_skill(repo: PlanRepository, default_skill: Path) -> None:
-    st.subheader("Runtime SKILL.md")
-    st.caption(f"Live file: {repo.root / 'SKILL.md'} · stored outside Git")
+    st.subheader("Timesheet Clerk instructions")
+    st.caption("Mapping instructions are saved with your Timesheet Clerk data.")
     text = read_runtime_skill(default_skill)
     edited = st.text_area("SKILL.md", value=text, height=650, label_visibility="collapsed", key="runtime-skill-editor")
     if st.button("Save SKILL and reload skills", type="primary"):

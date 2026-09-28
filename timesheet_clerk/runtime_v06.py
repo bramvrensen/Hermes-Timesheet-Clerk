@@ -23,7 +23,7 @@ For every create, refresh or explicit rebuild:
 
 The rebuild flag is immutable for a run. A refresh may never escalate itself to rebuild.
 
-Python owns plan identity, Clockify source fidelity, week metadata, coverage, revisions, merging, human-review preservation, ignored normalization, removed-source reconciliation and the canonical daily schedule. Planned work starts at 09:00, non-billable/internal entries come before billable entries and Python reflows the day after review changes. Never use terminal, execute_code, filesystem or generic file tools for Clerk state. On any Clerk tool error, stop and report the exact error.
+Python owns plan identity, Clockify source fidelity, week metadata, coverage, revisions, merging, human-review preservation, ignored normalization, removed-source reconciliation and the canonical daily schedule. Planned work starts at 09:00, non-billable/internal entries come before billable entries and Python reflows the day after review changes. Never use terminal, execute_code, filesystem or generic file tools for Timesheet Clerk state. On any Timesheet Clerk tool error, stop and report the exact error.
 """.strip()
 
 

@@ -217,6 +217,14 @@ def apply_mapping_decisions(
         removed_for_entry = [source_id for source_id in source_ids if source_id in removed_ids]
         if removed_for_entry:
             if len(source_ids) > 1 and len(removed_for_entry) != len(source_ids):
+                # Modern AUTO consolidations retain source identity and have no
+                # human duration allocation to guess. Rebuild their surviving
+                # sources from Clockify while preserving the validated target.
+                if entry.get("consolidated") and not entry.get("review_state") and entry.get("tier") == "AUTO" and entry.get("reconciliation_state") != "BOOKED":
+                    for source_id in source_ids:
+                        if source_id not in removed_ids and source_id not in decision_by_id:
+                            new_entries.append(_entry_from_decision(by_id[source_id], _mapping_projection(entry), prior=None))
+                    continue
                 raise StateConflict(
                     "requires_explicit_rebuild: legacy consolidated entry "
                     f"{entry.get('entry_id')} lost only part of its Clockify sources. "
@@ -400,6 +408,9 @@ def _mapping_projection(entry: dict[str, Any]) -> dict[str, Any]:
         "why_not_auto": entry.get("why_not_auto"),
         "review_state": entry.get("review_state"),
         "ignored": bool(entry.get("ignored", False)),
+        "billable": bool(entry.get("billable", True)),
+        "confidence": entry.get("confidence"),
+        "mapping_source": deepcopy(entry.get("mapping_source") or {}),
     }
 
 

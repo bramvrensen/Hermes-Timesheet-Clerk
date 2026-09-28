@@ -25,7 +25,9 @@ def reflow_plan_days(plan: dict[str, Any], *, consolidate_auto: bool = True) -> 
     # reduced set once more. Human-reviewed PROPOSE/ASK rows are consolidated in
     # the review flow where their preferred entry ID can be preserved safely.
     from .consolidation import consolidate_reviewed_entries
-    return consolidate_reviewed_entries(result, auto_only=True, reflow=False)
+    result = consolidate_reviewed_entries(result, auto_only=True, reflow=False)
+    _reflow_entries(result["entries"])
+    return result
 
 
 def _reflow_entries(entries: list[dict[str, Any]]) -> None:

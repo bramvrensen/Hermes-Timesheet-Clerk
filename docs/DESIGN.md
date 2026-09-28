@@ -24,7 +24,7 @@ Het product is human-in-the-loop: HERMES interpreteert en stelt mappings voor, P
 ## 3. Architectuur
 
 ```text
-Clockify REST + bestaande Clerk state
+Clockify REST + bestaande Timesheet Clerk state
                   │
                   ▼
       timesheet_mapping_prepare
@@ -84,7 +84,7 @@ HERMES:
 - bepaalt `AUTO`, `PROPOSE` of `ASK`;
 - geeft rationale, confidence en mapping-source evidence terug;
 - verzint geen IDs;
-- verandert geen Clerk filesystem/state buiten de Clerk tools;
+- verandert geen Timesheet Clerk filesystem/state buiten de Timesheet Clerk tools;
 - boekt nooit tijdens generation, refresh of rebuild.
 
 HERMES maakt geen volledig planobject, bepaalt geen revisionnummer en kopieert geen Clockify source facts naar state.

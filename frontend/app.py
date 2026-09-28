@@ -105,9 +105,12 @@ def _direct_editor_scoped(plan:dict,entry:dict)->dict:
     return {"customer_id":customer_id or None,"customer_name":review._name(customer) if customer else None,"project_id":project_id or None,"project_name":review._name(project) if project else None,"service_id":service_id or None,"service_name":review._name(service) if service else None,"hour_type_id":review._plain_id(hour_type) or None,"hour_type_name":review._name(hour_type) if hour_type else None,"billable":bool(mapping.get("billable",True))}
 
 
-if not hasattr(review,"_timesheet_clerk_base_editor"):review._timesheet_clerk_base_editor=review._editor
+if not hasattr(review, "_timesheet_clerk_base_editor"):
+    review._timesheet_clerk_base_editor = review._editor
 
-def _editor_with_task_booking(plan:dict,entry:dict)->None:review._timesheet_clerk_base_editor(plan,entry);render_task_booking(review.repo,plan,entry)
+def _editor_with_task_booking(plan:dict,entry:dict)->None:
+    review._timesheet_clerk_base_editor(plan, entry)
+    render_task_booking(review.repo,plan,entry)
 
 def _entry_dialog_with_scroll(plan_id:str,entry_id:str,review_context:dict)->None:st.session_state["scroll_to_entry"]=entry_id;review._timesheet_clerk_base_entry_dialog(plan_id,entry_id,review_context)
 
@@ -136,6 +139,18 @@ def main()->None:
     if flash:st.success(str(flash))
     failures=st.session_state.pop("booking_failures",None)
     if failures:st.error("Some registrations failed and remain open for review: "+"; ".join(f"{row.get('entry_id')}: {row.get('message')}" for row in failures))
+    from timesheet_clerk.deployment import standalone
+    if standalone():
+        monday, sunday = _current_week()
+        with st.expander("Import for manual review"):
+            st.caption("Read this week's hours without using a model. Choose the booking targets yourself.")
+            if st.button("Import current week", key="manual-current-week"):
+                from timesheet_clerk.jobs import launch_job
+                try:
+                    launch_job(review.repo.root, monday, sunday, manual=True)
+                    st.success("Timesheet Clerk import started.")
+                except Exception as exc:
+                    st.error(str(exc))
     try:ensure_active_plan(review.repo);stored=review._select_plan()
     except PlanNotFound:
         st.markdown("## ⏱️ Timesheet Clerk");build_tab,config_tab,skill_tab,state_tab=st.tabs(["Generate","Configuration","SKILL","State"])
