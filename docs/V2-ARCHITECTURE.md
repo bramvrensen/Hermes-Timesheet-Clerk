@@ -25,7 +25,7 @@ Manual import bypasses Hermes completely and supplies unresolved `ASK` decisions
 
 Task/day/week web actions validate the persisted working plan and human review where required. They do not require the legacy full-week immutable approval artifact. The older `execute_booking()` path still uses an immutable approved snapshot and typed confirmation; it is not exposed by the V2 connection plugin. The standalone write switch is enforced on both canonical web booking paths.
 
-API calls cannot book or destructively rebuild. Booking preflight and execution are serialized with state writes; concurrent edits make stale previews fail. Accepted POSTs get receipts before readback; receipt identity blocks another POST if readback fails. A process death after intent but before receipt is conservatively blocked by the separate attempt ledger. Manual reconciliation of an ambiguous attempt requires verifying Simplicate before changing the ledger; there is no automatic retry or discard button.
+API calls cannot book or destructively rebuild. Booking preflight and execution are serialized with state writes; concurrent edits make stale previews fail. Accepted POSTs get receipts before readback; receipt identity blocks another POST if readback fails. A process death after intent but before receipt is conservatively blocked by the separate attempt ledger. Both receipts and V2 attempts also keep Clockify source IDs, so rebuilding into a different plan does not bypass this protection. Manual reconciliation of an ambiguous attempt requires verifying Simplicate before changing the ledger; there is no automatic retry or discard button.
 
 ## Hermes dependencies and self-containment
 

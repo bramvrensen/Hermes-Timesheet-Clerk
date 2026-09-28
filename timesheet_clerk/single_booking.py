@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import datetime, timezone
+import json
 import os
 from typing import Any
 
@@ -37,6 +38,18 @@ def _entry_for_id(plan: dict[str, Any], entry_id: str) -> dict[str, Any]:
     return entry
 
 
+def _receipted_source_ids(repo: PlanRepository) -> set[str]:
+    """Receipts survive plan replacement; Clockify identity still prevents a duplicate."""
+    result: set[str] = set()
+    for path in repo.receipts_dir.glob("*.json"):
+        try:
+            receipt = json.loads(path.read_text(encoding="utf-8"))
+            result.update(str(value) for value in receipt.get("clockify_source_ids") or [])
+        except (OSError, ValueError, AttributeError):
+            continue
+    return result
+
+
 def preview_single_entry(repo: PlanRepository, plan_id: str, entry_id: str) -> dict[str, Any]:
     """Perform only the duplicate preflight for a validated persisted plan entry."""
     plan = repo.get_latest(plan_id)
@@ -47,7 +60,7 @@ def preview_single_entry(repo: PlanRepository, plan_id: str, entry_id: str) -> d
 
     client = SimplicateClient(SimplicateConfig.from_env())
     payload = _entry_payload(entry, client.config.employee_id)
-    receipted = entry_id in _receipt_entry_ids(repo, plan_id)
+    receipted = entry_id in _receipt_entry_ids(repo, plan_id) or bool(set(entry.get("clockify_source_ids") or []).intersection(_receipted_source_ids(repo)))
     day = str(entry.get("date") or "")[:10]
     booked = client.get_booked_hours(day, day)
     matches = [_existing_projection(item) for item in booked if _looks_like_same_registration(payload, item)]
@@ -80,12 +93,13 @@ def preview_entry_batch(repo: PlanRepository, plan_id: str, entry_ids: list[str]
     dates = [str(entry.get("date") or "")[:10] for entry in entries]
     booked = client.get_booked_hours(min(dates), max(dates))
     receipted = _receipt_entry_ids(repo, plan_id)
+    booked_sources = _receipted_source_ids(repo)
     rows: list[dict[str, Any]] = []
     for entry in entries:
         entry_id = str(entry["entry_id"])
         payload = payloads[entry_id]
         matches = [_existing_projection(item) for item in booked if _looks_like_same_registration(payload, item)]
-        status = "already_booked" if entry_id in receipted else "possible_duplicate" if matches else "ready"
+        status = "already_booked" if entry_id in receipted or set(entry.get("clockify_source_ids") or []).intersection(booked_sources) else "possible_duplicate" if matches else "ready"
         rows.append({"entry_id": entry_id, "entry": deepcopy(entry), "payload": payload, "status": status, "matches": matches})
     return {
         "plan_id": plan_id,
@@ -114,7 +128,9 @@ def _validate_prepared_preview(repo: PlanRepository, plan_id: str, entry_id: str
 def _write_and_verify(repo: PlanRepository, plan_id: str, revision: Any, entry: dict[str, Any], payload: dict[str, Any], client: SimplicateClient) -> dict[str, Any]:
     entry_id = str(entry["entry_id"])
     from .booking_attempts import guarded_post
-    response = guarded_post(repo, plan_id, entry_id, payload, lambda: _post_hours(client.config, payload))
+    if set(entry.get("clockify_source_ids") or []).intersection(_receipted_source_ids(repo)):
+        raise StateConflict("These Clockify sources already have a Timesheet Clerk booking receipt, including in an earlier plan.")
+    response = guarded_post(repo, plan_id, entry_id, payload, lambda: _post_hours(client.config, payload), source_ids=entry.get("clockify_source_ids") or [])
     timestamp = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     receipt = {
         "timestamp": timestamp, "plan_id": plan_id, "revision": revision, "entry_id": entry_id,

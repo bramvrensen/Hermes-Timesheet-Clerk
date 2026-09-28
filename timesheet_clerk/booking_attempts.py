@@ -9,13 +9,21 @@ from .http import IntegrationError
 from .storage import PlanRepository, StateConflict, _atomic_write_json, _read_json
 
 
-def guarded_post(repo: PlanRepository, plan_id: str, entry_id: str, payload: dict, post: Callable[[], Any]) -> Any:
+def guarded_post(repo: PlanRepository, plan_id: str, entry_id: str, payload: dict, post: Callable[[], Any], *, source_ids: list[str] | None = None) -> Any:
     key = sha256(f"{plan_id}\0{entry_id}".encode()).hexdigest()
     path = repo.root / "booking_attempts" / f"{key}.json"
     if path.exists() and _read_json(path).get("state") != "REJECTED":
         raise StateConflict("An earlier Timesheet Clerk booking attempt may have reached Simplicate. "
                             "Check Simplicate and the saved booking attempt before retrying.")
+    sources = set(source_ids or [])
+    if sources:
+        for prior in (repo.root / "booking_attempts").glob("*.json"):
+            recorded = _read_json(prior)
+            if recorded.get("state") != "REJECTED" and sources.intersection(recorded.get("clockify_source_ids") or []):
+                raise StateConflict("These Clockify sources already have a Timesheet Clerk booking attempt. "
+                                    "Rebuilding a plan does not authorize another POST.")
     attempt = {"plan_id": plan_id, "entry_id": entry_id, "payload": payload, "state": "PENDING",
+               "clockify_source_ids": sorted(sources),
                "timestamp": datetime.now(timezone.utc).isoformat()}
     _atomic_write_json(path, attempt, root=repo.root)
     try:
