@@ -150,7 +150,7 @@ def _assignment_target_ids(assignment: dict[str, Any]) -> tuple[Any, Any, Any, A
       assignment.project.id
       assignment.projectservice.id
       assignment.projecthourstype.hourstype.id
-    Compatibility fallbacks preserve older normalized Clerk state.
+    Compatibility fallbacks preserve older normalized Timesheet Clerk state.
     """
     project = assignment.get("project") or {}
     projectservice = assignment.get("projectservice") or assignment.get("task") or {}

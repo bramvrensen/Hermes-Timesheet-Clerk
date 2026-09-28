@@ -158,12 +158,14 @@ def test_removed_source_is_reconciled_even_when_snapshot_baseline_lost_it(tmp_pa
 def test_partial_loss_from_legacy_consolidated_entry_requires_explicit_rebuild(tmp_path, monkeypatch):
     monkeypatch.setattr(orchestration, "read_config", _cfg)
     repo = PlanRepository(tmp_path)
+    second_decision = direct_decision("c2")
+    second_decision["direct_mapping"]["service_id"] = "other-service"
     plan = orchestration.apply_mapping_decisions(
         repo,
         [source("c1"), source("c2", "Second", "2026-08-24T11:00:00+02:00")],
         monday="2026-08-24",
         sunday="2026-08-30",
-        decisions=[direct_decision("c1"), direct_decision("c2")],
+        decisions=[direct_decision("c1"), second_decision],
     )["plan"]
 
     consolidated = deepcopy(plan)

@@ -7,15 +7,17 @@ import shutil
 import sys
 from pathlib import Path
 
-__version__ = "0.7.17"
+__version__ = "2.0.0"
 
-os.environ.setdefault("TIMESHEET_CLERK_REVISION_RETENTION", "2")
+os.environ.setdefault("TIMESHEET_CLERK_REVISION_RETENTION", "10" if os.getenv("TIMESHEET_CLERK_MODE") == "standalone" else "2")
 
 _SHARED_STATE = Path("/home/hermes/.hermes/timesheet-clerk")
 _LEGACY_STATE = Path("/home/hermes/.hermes/profiles/atlas/timesheet-clerk")
 
 
 def _bootstrap_shared_state() -> None:
+    if os.getenv("TIMESHEET_CLERK_MODE") == "standalone":
+        return  # V2 has explicit deployment paths and an explicit state importer.
     configured = str(os.environ.get("TIMESHEET_CLERK_STATE_DIR") or "").strip()
     hermes_home_exists = Path("/home/hermes").is_dir()
 

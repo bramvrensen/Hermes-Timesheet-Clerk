@@ -2,7 +2,7 @@ name: tests
 
 on:
   push:
-    branches: [main]
+    branches: [main, feature/v2]
   pull_request:
   workflow_dispatch:
 
@@ -24,3 +24,43 @@ jobs:
         env:
           PYTHONPATH: .
         run: python -m pytest --rootdir=tests --import-mode=importlib -q tests
+  standalone:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build Timesheet Clerk with its pinned Hermes runtime
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: timesheet-clerk-v2:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Test the real private Hermes tool round-trip without live APIs
+        run: >-
+          docker run --rm --mount type=bind,src=$PWD/tests,dst=/tests,readonly
+          -e PYTHONPATH=/opt/timesheet-clerk
+          timesheet-clerk-v2:ci python /tests/smoke_hermes_v2.py
+          --hermes-bin /opt/hermes/.venv/bin/hermes
+      - name: Start the independent service without ATLAS
+        run: |
+          docker run -d --name timesheet-clerk-ci \
+            -e TIMESHEET_CLERK_API_TOKEN=timesheet-clerk-ci-token-123456789 \
+            -e TIMESHEET_CLERK_UI_PASSWORD=ci-private-password \
+            -e TIMESHEET_CLERK_SIMPLICATE_WRITE_ENABLED=false \
+            timesheet-clerk-v2:ci
+          for attempt in $(seq 1 60); do
+            state=$(docker inspect -f '{{.State.Health.Status}}' timesheet-clerk-ci)
+            if [ "$state" = healthy ]; then
+              docker exec timesheet-clerk-ci test -f /data/hermes/profiles/timesheet-clerk/config.yaml
+              exit 0
+            fi
+            if [ "$state" = unhealthy ]; then break; fi
+            sleep 2
+          done
+          docker logs timesheet-clerk-ci
+          exit 1
+      - name: Logs on failure
+        if: failure()
+        run: docker logs timesheet-clerk-ci || true

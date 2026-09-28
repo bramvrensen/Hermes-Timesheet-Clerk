@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from .storage import FILE_MODE, _mkdir, _normalize_path, default_state_dir
+from .deployment import PROFILE, standalone
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "planner_profile": "atlas",
@@ -35,7 +36,7 @@ _GUARDS = [
         """
 <!-- timesheet-clerk-runtime-guard:0.4.1 -->
 ## Mandatory Timesheet Clerk state-access guard
-Timesheet Clerk state must be accessed only through the `timesheet_*` Clerk tools. Never read, search, infer or edit Clerk plan/config/SKILL state through filesystem, terminal, shell, generic file tools or guessed paths. Clockify date-range tool arguments must be full ISO-8601 timestamps rather than bare calendar dates.
+Timesheet Clerk state must be accessed only through the `timesheet_*` Timesheet Clerk tools. Never read, search, infer or edit Timesheet Clerk plan/config/SKILL state through filesystem, terminal, shell, generic file tools or guessed paths. Clockify date-range tool arguments must be full ISO-8601 timestamps rather than bare calendar dates.
 """,
     ),
     (
@@ -73,11 +74,13 @@ def runtime_skill_path() -> Path:
 
 def hermes_root() -> Path:
     """Global Hermes state root, independent from planner profile."""
-    return state_root().parent
+    from .deployment import hermes_root as deployment_root
+    return deployment_root()
 
 
 def profile_home(profile: str) -> Path:
-    return hermes_root() / "profiles" / str(profile).strip()
+    from .deployment import profile_home as deployment_home
+    return deployment_home(str(profile).strip())
 
 
 def profile_config_path(profile: str) -> Path:
@@ -95,6 +98,8 @@ def read_config() -> dict[str, Any]:
         if isinstance(payload, dict):
             result.update(payload)
     result = validate_config(result)
+    if standalone():
+        result["planner_profile"] = PROFILE
     os.environ["TIMESHEET_CLERK_PLANNER_PROFILE"] = result["planner_profile"]
     return result
 
@@ -103,9 +108,12 @@ def write_config(config: dict[str, Any]) -> dict[str, Any]:
     merged = deepcopy(DEFAULT_CONFIG)
     merged.update(config or {})
     merged = validate_config(merged)
+    if standalone():
+        merged["planner_profile"] = PROFILE
     _atomic_write_text(config_path(), json.dumps(merged, ensure_ascii=False, indent=2) + "\n")
     os.environ["TIMESHEET_CLERK_PLANNER_PROFILE"] = merged["planner_profile"]
-    ensure_profile_skill_registration(merged["planner_profile"])
+    if not standalone():
+        ensure_profile_skill_registration(merged["planner_profile"])
     return merged
 
 
@@ -134,6 +142,8 @@ def ensure_runtime_skill(default_skill: Path) -> Path:
         _mkdir(target.parent, root=state_root())
         shutil.copyfile(default_skill, target)
         _normalize_path(target, directory=False, root=state_root())
+    if standalone():
+        return target
     try:
         current = target.read_text(encoding="utf-8")
     except OSError:
@@ -209,6 +219,8 @@ def ensure_profile_skill_registration(profile: str) -> dict[str, Any]:
 
 def reload_skills_for_profile(profile: str) -> dict[str, Any]:
     """Call Hermes' real skill reload function in the requested profile context."""
+    if standalone():
+        return {"reload": {"mode": "next-job", "total": 1}}
     registration = ensure_profile_skill_registration(profile)
     env = os.environ.copy()
     env["HERMES_HOME"] = str(profile_home(profile))

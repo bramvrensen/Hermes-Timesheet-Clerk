@@ -1,0 +1,29 @@
+name: timesheet-clerk-v2
+services:
+  timesheet-clerk:
+    image: timesheet-clerk-v2:${TIMESHEET_CLERK_IMAGE_TAG:-local}
+    build:
+      context: .
+    init: true
+    restart: unless-stopped
+    env_file: ${TIMESHEET_CLERK_ENV_FILE:-.env}
+    environment:
+      TIMESHEET_CLERK_MODE: standalone
+      TIMESHEET_CLERK_STATE_DIR: /data/clerk
+      TIMESHEET_CLERK_HERMES_ROOT: /data/hermes
+      TIMESHEET_CLERK_HERMES_BIN: /opt/hermes/.venv/bin/hermes
+      TIMESHEET_CLERK_UI_PORT: "8501"
+      TIMESHEET_CLERK_API_PORT: "8502"
+      TIMESHEET_CLERK_UI_BASE_PATH: ""
+    ports:
+      - "${TIMESHEET_CLERK_LISTEN_ADDRESS:-127.0.0.1}:${TIMESHEET_CLERK_HTTP_PORT:-8501}:8501"
+      - "${TIMESHEET_CLERK_LISTEN_ADDRESS:-127.0.0.1}:${TIMESHEET_CLERK_API_HOST_PORT:-8502}:8502"
+    volumes:
+      - state:/data/clerk
+      - runtime:/data/hermes
+    stop_grace_period: 30s
+volumes:
+  state:
+    name: timesheet-clerk-v2-state
+  runtime:
+    name: timesheet-clerk-v2-runtime

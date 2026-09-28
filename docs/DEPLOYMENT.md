@@ -1,224 +1,81 @@
-# Deployment guide
+# Timesheet Clerk V2 deployment
 
-This document records the deployment details that were easy to get wrong while wiring Timesheet Clerk into the Hermes VPS.
+## Installatie
 
-## Shared state
+Vereist: Linux, werkende Docker-daemon, Docker Compose V2 met `up --wait`, Python 3 en curl. De eerste build downloadt de afhankelijkheden. Er is geen bestaande Hermes nodig.
 
-Timesheet Clerk state is agent-independent. Unless `TIMESHEET_CLERK_STATE_DIR` is explicitly set, runtime state lives at:
+```bash
+curl -fsSL https://raw.githubusercontent.com/bramvrensen/Hermes-Timesheet-Clerk/feature/v2/install.sh -o /tmp/timesheet-clerk-install.sh
+bash /tmp/timesheet-clerk-install.sh --dir "$HOME/timesheet-clerk"
+```
+
+De installer haalt eerst de SHA van de gekozen GitHub-ref op, downloadt het archief van die SHA en bouwt dat image. `--ref feature/v2` is de huidige standaard; een tag of SHA werkt ook. Met `--env-file /pad/private.env --yes` kan een eerste installatie zonder vragen draaien. Gebruik daarvoor een ingevulde versie van `.env.example`, inclusief een willekeurig API-token van minstens 24 tekens.
 
 ```text
-/home/hermes/.hermes/timesheet-clerk
+~/timesheet-clerk/
+├── .env                    privé instellingen, mode 0600
+├── installation.json       geïnstalleerde GitHub-versie
+├── current                 verwijzing naar de werkende codeversie
+└── releases/<commit>/      code, Compose en verbindingsprogramma
+
+Docker-volume timesheet-clerk-v2-state    → /data/clerk
+Docker-volume timesheet-clerk-v2-runtime  → /data/hermes
 ```
 
-The old Atlas-scoped location is migrated once when the shared directory does not yet exist. Changing `planner_profile` therefore does not move Clerk state.
+Compose heeft een eigen projectnaam en volumes. Het image bevat Python, de webpagina, de API en een vastgezette Hermes-runtime. De container draait met gebruiker 10001; Docker init ruimt kindprocessen op. Beide interne endpoints moeten werken voordat de installer meldt dat Timesheet Clerk gestart is.
 
-The shared directory contains runtime configuration, the editable live `SKILL.md`, open plans, bounded working revisions, source snapshots, feedback, learned rules, approval snapshots, receipts and frontend logs.
+## Webpagina en verbinding bereikbaar maken
 
-### Ownership and permissions
+De hostpoorten zijn standaard uitsluitend gebonden aan `127.0.0.1`: webpagina 8501 en verbindings-API 8502. Voor een tijdelijke verbinding met een externe server:
 
-Both Hermes agents and the optional Streamlit frontend may write this directory. 0.4.4 normalizes files/directories to the owner of the global Hermes state root and uses private group-safe modes:
-
-```text
-directories 0770
-files       0660
+```bash
+ssh -L 8501:127.0.0.1:8501 -L 8502:127.0.0.1:8502 gebruiker@server
 ```
 
-The preferred Compose configuration also runs the frontend as the Hermes runtime UID/GID (`1000:1000` in the standard container). Code-level normalization remains as a safety net and the Configuration page exposes `Repair shared permissions` for existing mixed ownership.
-
-Do not fix this by making state world-readable/writable.
-
-## Plugin checkout versus runtime state
-
-Keep Git-managed code and mutable state separate:
-
-```text
-plugin code
-/home/hermes/.hermes/plugins/timesheet-clerk
-
-runtime state
-/home/hermes/.hermes/timesheet-clerk
-```
-
-The live runtime `SKILL.md` is copied from the repository template on first use and then edited outside Git. Git updates cannot overwrite it. Runtime guards are appended non-destructively when new versions require them.
-
-## Planner profile and SKILL discovery
-
-The shared runtime SKILL is registered through the configured planner profile's `skills.external_dirs`:
-
-```yaml
-skills:
-  external_dirs:
-    - /home/hermes/.hermes/timesheet-clerk
-```
-
-0.4.4 ensures this entry automatically when configuration is saved and when the plugin registers. This applies equally to `atlas`, `atlas-worker` or another future planner profile.
-
-A SKILL save from the frontend invokes Hermes' real `reload_skills()` function in that profile's `HERMES_HOME`; it does not send `/reload-skills` as an LLM prompt.
-
-## Recommended Compose service
-
-Run Streamlit as its own Compose service so it starts after reboot and restarts after failures. Reuse the same Hermes image and persistent Hermes volume as the existing `hermes-agent` service.
-
-```yaml
-timesheet-clerk-ui:
-  image: ${HERMES_IMAGE}
-  user: "1000:1000"
-  restart: unless-stopped
-  volumes:
-    - hermes-data:/home/hermes/.hermes
-  environment:
-    TIMESHEET_CLERK_STATE_DIR: /home/hermes/.hermes/timesheet-clerk
-    TIMESHEET_CLERK_PLUGIN_DIR: /home/hermes/.hermes/plugins/timesheet-clerk
-    TIMESHEET_CLERK_UI_PASSWORD: ${TIMESHEET_CLERK_UI_PASSWORD}
-    TIMESHEET_CLERK_UI_PORT: "8501"
-    TIMESHEET_CLERK_UI_BASE_PATH: timesheet
-  entrypoint:
-    - python
-    - /home/hermes/.hermes/plugins/timesheet-clerk/frontend/managed_launcher.py
-```
-
-Notes:
-
-- `user: "1000:1000"` keeps frontend writes aligned with the Hermes runtime identity. If a deployment uses another Hermes UID/GID, use that identity instead.
-- The entire `/home/hermes/.hermes` tree must be the same persistent volume the Hermes runtime uses.
-- Do not hard-code `HERMES_PROFILE_ENV` for Atlas. The UI derives the configured planner profile from Timesheet Clerk runtime config and uses that profile's `.env` only when integration values are not already in the environment.
-- The managed launcher watches `/home/hermes/.hermes/timesheet-clerk/frontend-restart.request` and reaps adopted child processes.
-- Use `entrypoint:` rather than `command:` with the Hermes image so the UI container does not start a second Hermes gateway.
-
-## Caddy
-
-Caddy should reverse proxy `/timesheet` to the Streamlit service. Keep Streamlit off the public internet directly.
+Open lokaal `http://localhost:8501`. Voor een vaste installatie kan een reverse proxy die op de host draait bijvoorbeeld twee HTTPS-adressen doorsturen:
 
 ```caddyfile
-handle_path /timesheet/* {
-    reverse_proxy timesheet-clerk-ui:8501
+timesheet.example.nl {
+    reverse_proxy 127.0.0.1:8501
+}
+timesheet-api.example.nl {
+    reverse_proxy 127.0.0.1:8502
 }
 ```
 
-The app starts Streamlit with `--server.baseUrlPath timesheet`, so the proxy route and Streamlit base path must agree.
+Een proxy in een Docker-container kan de host-loopback niet gebruiken: verbind die met een apart gedeeld netwerk of een hostgateway die toegang heeft tot deze poorten. Stem dit af op je bestaande proxy; die configuratie is geen onderdeel van de Timesheet Clerk-installer. Zet `TIMESHEET_CLERK_PUBLIC_URL` op het webadres. Geef `connect-hermes.py` het **API-adres**, bijvoorbeeld `https://timesheet-api.example.nl`. Als Hermes in een andere container draait, is `localhost` die container zelf.
 
-## Environment and secrets
+De webpagina gebruikt haar eigen wachtwoord. De API gebruikt een apart Bearer-token. `/healthz` is openbaar en geeft alleen servicenaam en versie. De API heeft geen boekings-, verwijderings- of rebuild-endpoint.
 
-Required values are:
+## Van V1 naar V2
 
-```text
-CLOCKIFY_API_KEY
-CLOCKIFY_WORKSPACE_ID
-CLOCKIFY_USER_ID
-SIMPLICATE_BASE_URL
-SIMPLICATE_API_KEY
-SIMPLICATE_API_SECRET
-SIMPLICATE_EMPLOYEE_ID
-TIMESHEET_CLERK_UI_PASSWORD
-```
-
-Do not copy API secrets into Git or Timesheet Clerk runtime config JSON.
-
-## Canonical test command
-
-Do not use plain `pytest` from the repository root in the Hermes container. The checkout directory contains a hyphen and the plugin root package can confuse collection/import mode. The canonical smoke test is:
+Maak een consistente kopie van de oude Timesheet Clerk-state terwijl de oude planner en Timesheet Clerk-webpagina niet schrijven. Veel V1-installaties gebruiken `/home/hermes/.hermes/timesheet-clerk`; oudere installaties gebruiken `/home/hermes/.hermes/profiles/atlas/timesheet-clerk`. Het is uitsluitend de Timesheet Clerk-map die nodig is.
 
 ```bash
-cd /home/hermes/.hermes/plugins/timesheet-clerk
-PYTHONPATH=. uv run --with pytest pytest \
-  --rootdir=tests \
-  --import-mode=importlib \
-  -q tests
+bash /tmp/timesheet-clerk-install.sh --migrate-from /pad/naar/kopie/timesheet-clerk
 ```
 
-This temporarily supplies pytest through `uv` and does not install it permanently into the Hermes venv.
+De import vindt plaats vóór de eerste service-start, in een tijdelijk gecontroleerde map. Daarna worden gevalideerde bestanden naar de nieuwe opslag verplaatst. De bron blijft ongewijzigd. Een onderbroken verplaatsing kan met hetzelfde importcommando hervat worden; een gevulde bestemming wordt niet overschreven. Geïmporteerde bestanden krijgen de rechten van de eigen containergebruiker.
 
-## Updating the plugin
+Meegenomen: configuratie, eigen `SKILL.md`, actieve-planwijzer, alle aangeleverde planrevisies en approvals, boekingsbewijzen, feedback, regels en eventuele V2-boekingspogingen. Niet meegenomen: Hermes-profiel, Hermes-sessies, `.env`, frontend- of plannerprocessen en cachebestanden. Het nieuwe plannerprofiel wordt altijd `timesheet-clerk`; overige geldige beleidsinstellingen en eigen instructies blijven behouden.
 
-### Normal path from 0.4.4 onward
+Controleer vóór het verwijderen van V1: planoverzicht en aantallen, een eerder beoordeelde regel, een bestaande boeking met bewijs, een refresh en de toegang vanuit je nieuwe Hermes. De automatische tests gebruiken testgegevens en vervangen deze controle met je eigen accounts niet.
 
-Use Hermes itself, not the frontend and not Docker:
+## Instellingen en updates
 
-```text
-"Update Timesheet Clerk"
-        ↓
-timesheet_update
-```
+Integration- en modelgeheimen staan in de private `.env` buiten de code. De webpagina bewaart beleidsinstellingen en mappinginstructies in het state-volume. Bewerk model/verbindingen in `.env` en voer de installer opnieuw uit om de containeromgeving te vernieuwen. Een lege `TIMESHEET_CLERK_MODEL` geeft handmatige review; `TIMESHEET_CLERK_SIMPLICATE_WRITE_ENABLED=false` blokkeert alle V2-webboekingen.
 
-`timesheet_update` performs these steps against the fixed plugin checkout:
+Updates bouwen eerst een nieuw image. De vorige codeversie blijft beschikbaar en de volumes blijven behouden. Bij een mislukte service-start probeert de installer de vorige versie opnieuw te starten. De `current`-verwijzing wordt alleen na een gezonde start aangepast. Gebruik geen `down --volumes` als je gegevens wilt behouden.
 
-1. refuses to overwrite a dirty Git working tree;
-2. performs `git pull --ff-only`;
-3. ensures the shared runtime SKILL and configured planner-profile discovery remain wired;
-4. schedules Hermes' supported in-band gateway restart after the current turn;
-5. the supervisor respawns the gateway and the fresh process loads the new Python plugin module/tool registry.
+## Backup en herstel
 
-Runtime state is untouched. The Streamlit frontend is not involved.
-
-### Why a gateway restart is still required
-
-A Git pull updates Python files on disk, but a running gateway keeps the already-imported plugin module and tool handlers in memory. A new session or `/reset` does not reload that module.
-
-Hermes' `PluginManager.discover_and_load(force=True)` exists internally, but as of this deployment Hermes does not expose a stable running-gateway CLI/IPC command for safe Python plugin hot reload. Upstream feature requests for plugin reload are still open. 0.4.4 therefore uses Hermes' own supervised in-band gateway restart (`SIGUSR1` restart lifecycle), not a Docker/container restart.
-
-This distinction matters:
-
-```text
-Git pull          = update code on disk
-plugin reload     = reload Python/tool registrations (currently via gateway respawn)
-SKILL reload      = rescan skill instructions only
-frontend restart  = restart Streamlit only
-```
-
-A frontend restart is needed only when frontend code changed. The frontend is not the plugin updater.
-
-## First upgrade to 0.4.4
-
-0.4.3 does not yet contain `timesheet_update`, so the one-time upgrade to 0.4.4 still requires the existing deployment path: pull the repository, run the canonical tests, then restart the Hermes gateway/container once so 0.4.4's new tool registration is loaded. After that, future updates should use `timesheet_update`.
-
-If the existing frontend service still runs as root, either recreate it with `user: "1000:1000"` or use `Repair shared permissions` after the first 0.4.4 start. The code also repairs mixed ownership when a privileged frontend process opens the shared repository.
-
-## Clockify source baseline migration
-
-Legacy plans created before 0.4.4 do not contain trustworthy per-Clockify source snapshots. `timesheet_sync_probe` therefore returns:
-
-```text
-requires_rebaseline: true
-```
-
-This is not a Clockify change. Call `timesheet_source_rebaseline` for the same interval. It stores a canonical source snapshot keyed by Clockify ID without changing human review values. An immediate second probe must return `new=0`, `changed=0`, `missing=0` unless Clockify genuinely changed.
-
-## Working revision retention
-
-Human review edits still create explicit working revisions for optimistic locking and auditability, but mutable history is bounded (10 revisions by default, overridable with `TIMESHEET_CLERK_REVISION_RETENTION`). Approval snapshots and feedback are stored separately and are not pruned by working-history compaction.
-
-The Configuration page also exposes `Compact working revisions` for existing large histories.
-
-## Hermes toolset warning
-
-Hermes may emit:
-
-```text
-Warning: Unknown toolsets: fetch-json, timesheet_clerk
-```
-
-while initializing, even when both plugin toolsets subsequently register and are callable. We verified `timesheet_plan_active` and other Timesheet Clerk tools work after this warning. This currently behaves as an upstream plugin load-order/early-validation warning.
-
-Do **not** remove a valid `timesheet_clerk` toolset from platform configuration merely to silence it. Treat the warning as non-blocking unless the tools are actually absent after startup.
-
-The unrelated deprecated `TERMINAL_CWD` warning should be fixed by moving the value into profile `config.yaml`:
-
-```yaml
-terminal:
-  cwd: /opt/hermes
-```
-
-and removing `TERMINAL_CWD` from `.env` afterward.
-
-## Manual frontend fallback
-
-For troubleshooting only:
+Maak een export terwijl Timesheet Clerk niet actief wordt gebruikt voor review/boeken:
 
 ```bash
-cd /home/hermes/.hermes/plugins/timesheet-clerk
-TIMESHEET_CLERK_UI_PASSWORD='<secret>' \
-TIMESHEET_CLERK_STATE_DIR=/home/hermes/.hermes/timesheet-clerk \
-python frontend/managed_launcher.py
+TIMESHEET_CLERK_ENV_FILE="$HOME/timesheet-clerk/.env" docker compose --env-file "$HOME/timesheet-clerk/.env" -f "$HOME/timesheet-clerk/current/compose.yaml" exec timesheet-clerk \
+  python -m timesheet_clerk.migration export /data/clerk /data/clerk/timesheet-clerk-backup.tar.gz
 ```
 
-A manually started foreground process does not survive reboot. Compose is the intended steady state.
+Kopieer het exportbestand uit de container en bewaar ook je private `.env` apart. Het exportbestand bevat uitsluitend de bekende statebestanden en geen geheimen uit `.env`. Een backup kan met `--migrate-from /pad/timesheet-clerk-backup.tar.gz` naar een lege V2-installatie worden geïmporteerd. De import weigert symlinks, speciale bestanden, ongeldige paden en ongeldige JSON/plancontracten.
+
+Het Hermes-runtimevolume bevat herbouwbare profielconfiguratie en plannerlogs; de boekingshistorie staat in het state-volume. Bewaar beide volumes bij een herstart. Een algemene Docker-prune is niet beperkt tot ATLAS en vereist dus aandacht voor Timesheet Clerk-volumes.

@@ -1,0 +1,14 @@
+*
+!Dockerfile
+!requirements.txt
+!plugin.yaml
+!timesheet_clerk/
+!timesheet_clerk/**
+!frontend/
+!frontend/**
+!hermes_plugins/
+!hermes_plugins/**
+!skills/
+!skills/**
+**/__pycache__
+**/*.pyc

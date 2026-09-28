@@ -17,10 +17,14 @@ _CACHE_TTL_SECONDS = 1800
 
 
 def _load_planner_profile_env() -> None:
+    from .deployment import standalone
+    if standalone():
+        return
     if all(str(os.environ.get(key) or "").strip() for key in _REQUIRED):
         return
     profile = str(read_config().get("planner_profile") or "atlas")
-    profile_env = Path(os.environ.get("HERMES_PROFILE_ENV") or f"/home/hermes/.hermes/profiles/{profile}/.env")
+    from .runtime import profile_home
+    profile_env = Path(os.environ.get("HERMES_PROFILE_ENV") or profile_home(profile) / ".env")
     if not profile_env.is_file():
         return
     for raw in profile_env.read_text(encoding="utf-8").splitlines():

@@ -3,15 +3,13 @@ version: 2.0.0
 description: Connect Hermes to the independent Timesheet Clerk application.
 author: Bram van Rensen
 homepage: https://github.com/bramvrensen/Hermes-Timesheet-Clerk
-
 provides_tools:
   - timesheet_clerk_status
   - timesheet_clerk_generate
   - timesheet_clerk_job
-
 requires_env:
   - name: TIMESHEET_CLERK_API_URL
-    description: Address of your independent Timesheet Clerk API.
+    description: Address of your independent Timesheet Clerk API, including port when needed.
     secret: false
   - name: TIMESHEET_CLERK_API_TOKEN
     description: Connection token from your Timesheet Clerk installation.

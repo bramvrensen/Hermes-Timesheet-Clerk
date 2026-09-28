@@ -1,152 +1,83 @@
-# HERMES Timesheet Clerk
+# Timesheet Clerk V2
 
-Human-in-the-loop timesheet planning and booking for HERMES Agent.
+Timesheet Clerk haalt uren uit Clockify, maakt voorstellen voor Simplicate en laat je die in een webpagina beoordelen en boeken. V2 draait als een eigen applicatie, met een eigen Hermes-runtime en een eigen **Timesheet Clerk**-profiel. Je kunt ATLAS verwijderen of opnieuw installeren zonder de Timesheet Clerk-code, instellingen of gegevens te verwijderen.
 
-> Status: **0.6.8 deterministic planner.** Clockify/Simplicate reads, decisions-only mapping orchestration, source reconciliation, review UI, deterministic day scheduling, reviewed-entry consolidation, human duration display, project-service-scoped hour type selection, feedback, approvals, safe week rebuilds and current-week generation are available. Simplicate writes remain deliberately disabled until the booking path is validated.
+Deze versie wordt ontwikkeld op **`feature/v2`**. De bestaande V1 staat nog op `main`. Installeer V2 eerst naast de bestaande installatie en controleer de overgenomen gegevens voordat je V1 verwijdert.
 
-See [`docs/DESIGN.md`](docs/DESIGN.md), [`docs/IMPLEMENTATION.md`](docs/IMPLEMENTATION.md) and [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md).
+## Direct vanuit GitHub installeren
 
-## Architecture
+Gebruik een Linux-server met Docker, Docker Compose V2, Python 3 en curl. Er hoeft geen Hermes of ATLAS op die server te draaien.
 
-HERMES receives exact Clockify work items and returns mapping decisions only. Python owns plan identity, Clockify source truth, durations, week metadata, coverage, revisioning, merge behaviour, human-review preservation, scheduling and persistence.
-
-```text
-Clockify + existing Clerk state
-            ↓
-timesheet_mapping_prepare
-            ↓
- exact mapping work_items
-            ↓
-        HERMES
-   mapping decisions only
-            ↓
-timesheet_mapping_apply
-            ↓
-validated + scheduled plan revision
+```bash
+curl -fsSL https://raw.githubusercontent.com/bramvrensen/Hermes-Timesheet-Clerk/feature/v2/install.sh -o /tmp/timesheet-clerk-install.sh
+bash /tmp/timesheet-clerk-install.sh
 ```
 
-## 0.6.8 non-destructive existing Hour Type handling
+De installer vraagt eenmalig om je Clockify- en Simplicate-verbindingen, een webwachtwoord en eventueel je modelverbinding. Hij downloadt de gekozen GitHub-versie, bouwt de applicatie met zijn eigen Hermes-runtime, maakt het Timesheet Clerk-profiel aan en wacht totdat de webpagina en verbindingsservice werken. Een Git-clone is niet nodig.
 
-Opening the direct-mapping editor may never erase an already persisted complete Hour Type merely because the current Simplicate review context cannot re-hydrate that service/hour-type relation.
+Standaard staat de installatie in `~/timesheet-clerk`. Open daarna **http://localhost:8501** op de server, of het webadres van je reverse proxy. Bij een externe server kun je tijdelijk een SSH-tunnel gebruiken; de [installatiehandleiding](docs/DEPLOYMENT.md) beschrijft dat.
 
-0.6.8 therefore keeps a persisted Hour Type available when the selected Task / service is still the same service. The UI warns that the relationship could not be re-verified, but the current mapping remains complete and `Save changes` remains available. New Hour Type choices are still restricted to the strictly scoped values supplied by Simplicate.
+Zonder model kun je **Import for manual review** gebruiken. Clockify wordt dan deterministisch ingelezen en alle nieuwe regels vragen om handmatige koppeling. Een model is alleen nodig voor automatische koppelingsvoorstellen.
 
-If the user changes Task / service, an Hour Type from the old service is not carried across. This preserves existing reviewed state without weakening validation for new mappings.
+## Bestaande Timesheet Clerk meenemen
 
-## 0.6.7 authoritative project-service hour types
+Gebruik de volledige oude **Timesheet Clerk-gegevensmap**, met `config.json`, `SKILL.md`, `plans/`, `approvals/` en `receipts/`. Pauzeer de oude Timesheet Clerk-planner en webpagina terwijl je een consistente kopie maakt. Geef die map of een Timesheet Clerk-exportbestand mee aan de **eerste** V2-installatie:
 
-0.6.5 correctly stopped offering global hour types, but initially reconstructed service/hour-type relationships indirectly from assignments. That fails for valid project services that have no matching booking assignment in the selected week, such as restored travel-time rows.
-
-0.6.7 uses Simplicate's project service payload as the primary source of truth. `/projects/service` exposes `hour_types[]` for each project service; those nested hour types are normalized directly into the review context. Assignment linkage and explicit masterdata service IDs remain supplementary evidence only.
-
-The persistent review-context cache is versioned in 0.6.7 so an upgrade cannot continue serving the pre-fix scoped data for up to 30 minutes.
-
-## 0.6.6 reviewed consolidation and human time display
-
-Human review can now consolidate adjacent entries after a correction/restore workflow. Consolidation is deliberately conservative: both rows must be non-ignored, resolved, human-confirmed/corrected, contiguous in planned time, have the exact same booking target and billable state, and represent the same Clockify work context/description. Matching rows are merged into one visible booking block while all underlying `clockify_source_ids` and snapshots remain available for coverage and later splitting.
-
-Example: two reviewed Cyclovriend `Reistijd` rows of one hour each, mapped to the same Simplicate travel code, become one `09:00–11:00` block of `2u`.
-
-Duration presentation no longer uses decimal-hour notation. Review cards, day summaries and week metrics use human labels such as `15 min`, `30 min`, `1u`, `1u 30 min` and `2u`. Clockify source durations use the same presentation.
-
-## 0.6.5 service-scoped hour types
-
-Direct-mapping review treats the Simplicate Task / service as the parent of the Hour type choice.
-
-- selecting a Task / service filters the Hour type dropdown to values valid for that project service;
-- global/unscoped hour types are never offered as a fallback;
-- duplicate hour types are removed by ID;
-- the configured preferred hour type is only prioritized inside the valid scoped set;
-- if Simplicate exposes no valid hour types for the selected service, the UI shows a warning and the mapping remains incomplete.
-
-## 0.6.4 review and scheduling
-
-The daily booking timeline is deterministic:
-
-- ignored rows remain source-covered but do not participate in the booking timeline;
-- non-billable/internal entries are scheduled before billable entries;
-- the first non-ignored entry starts at 09:00;
-- following entries are contiguous using `planned_duration_seconds`;
-- the same reflow runs after CREATE/REFRESH and human review changes such as duration, skip, restore and mapping edits.
-
-Restore is fail-safe: restoring an ignored entry without a complete target reopens it as `ASK/PENDING` rather than fabricating a resolved mapping.
-
-Unclassified time is never silently discarded. Blank descriptions and recognized placeholders such as `?`, `??`, `?? -- ??`, `unknown` and `onbekend` are forced back to non-ignored `ASK` state.
-
-Simplicate review context is fetched concurrently and cached per week for 30 minutes in shared Clerk state, substantially reducing frontend load time.
-
-## 0.6.3 ignored entries
-
-Ignored Clockify rows count toward source coverage but are intentionally not bookable. HERMES may omit booking target fields for `ignored=true`; Python normalizes the non-bookable state and plan validation does not require Simplicate target IDs.
-
-## 0.6.2 current-week generation
-
-A historical week can remain open while `Generate current week` is offered for a missing current calendar week. CREATE detection is based on the exact week, not the global active pointer.
-
-## 0.6.1 source reconciliation
-
-Removed Clockify sources are determined from live source IDs versus actual plan coverage. Safe single-source removals are reconciled automatically; ambiguous partial loss from a legacy consolidated row fails closed with `requires_explicit_rebuild`.
-
-## Safety
-
-- HERMES cannot submit arbitrary booking-plan JSON.
-- Legacy destructive create/sync/rebaseline/fresh-start tools are removed from the planner surface.
-- A normal refresh may never escalate itself into a rebuild.
-- Rebuild is create-before-switch; failed rebuilds preserve existing state.
-- Missing active pointers can be recovered from stored plans.
-- Background planner jobs use explicit STARTING/RUNNING/SUCCEEDED/FAILED state.
-- Runtime SKILL state receives a mandatory versioned planner guard.
-- CI runs compile + pytest on pushes to `main` and pull requests.
-
-## Shared state
-
-Default production state:
-
-```text
-/home/hermes/.hermes/timesheet-clerk
+```bash
+bash /tmp/timesheet-clerk-install.sh --migrate-from /pad/naar/oude/timesheet-clerk
 ```
 
-Plans, approvals, receipts, feedback, rules, runtime SKILL state and UI context cache live outside the plugin checkout and survive code updates.
+De import controleert de gegevens, bewaart plannen, boekingsbewijzen, feedback, regels en je eigen instructies, en laat de bron intact. Hij weigert een al gevulde V2-opslag te overschrijven. Hermes-sessies, algemene ATLAS-instructies en oude Hermes-geheimen worden niet geïmporteerd.
 
-## Core HERMES tools
+## Een nieuwe Hermes-installatie verbinden
 
-```text
-timesheet_config_get
-timesheet_clockify_entries
-timesheet_sync_probe
-timesheet_mapping_prepare
-timesheet_mapping_apply
-timesheet_simplicate_context
-timesheet_simplicate_assignments
-timesheet_simplicate_booking_assignments
-timesheet_simplicate_available_assignments
-timesheet_simplicate_booked_hours
-timesheet_plan_active
-timesheet_plan_summary
-timesheet_plan_list
-timesheet_learning_context
-timesheet_update
+Timesheet Clerk werkt al via zijn eigen webpagina. Wil je hem ook vanuit je nieuwe ATLAS/Hermes aanspreken, download dan op de machine waar Hermes draait het verbindingsprogramma:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/bramvrensen/Hermes-Timesheet-Clerk/feature/v2/connect-hermes.py -o /tmp/timesheet-clerk-connect.py
+python3 /tmp/timesheet-clerk-connect.py
 ```
 
-## Updating
+Dit programma vraagt het Timesheet Clerk-API-adres en je verbindingstoken, controleert de verbinding en maakt in die Hermes-installatie een **Timesheet Clerk**-profiel (`timesheet-clerk`) met zijn eigen verbindingsplugin en skill. Voor het model van dit nieuwe Hermes-profiel opent het de Hermes-modelkeuze. Je standaardprofiel blijft behouden. Het token staat in de privé `.env` van de Timesheet Clerk-installatie, onder `TIMESHEET_CLERK_API_TOKEN`.
 
-The canonical repository is `bramvrensen/Hermes-Timesheet-Clerk`.
+Daarna open je het profiel met:
 
-During recovery/development the deterministic fallback is a Git fast-forward pull inside `hermes-agent`, followed by restarting `hermes-agent` and `timesheet-clerk-ui`.
-
-## Required integration configuration
-
-```text
-CLOCKIFY_API_KEY
-CLOCKIFY_WORKSPACE_ID
-CLOCKIFY_USER_ID
-SIMPLICATE_BASE_URL
-SIMPLICATE_API_KEY
-SIMPLICATE_API_SECRET
-SIMPLICATE_EMPLOYEE_ID
-TIMESHEET_CLERK_UI_PASSWORD
+```bash
+hermes -p timesheet-clerk
 ```
 
-## Booking boundary
+Vraag bijvoorbeeld: “Maak voorstellen voor 24 tot en met 30 augustus 2026.” De plugin kan de status opvragen, een week laten genereren en de voortgang bekijken. Beoordelen en boeken doe je in de Timesheet Clerk-webpagina. De nieuwe ATLAS heeft geen Clockify- of Simplicate-sleutels nodig.
 
-Simplicate writes remain disabled. Booking will only execute from immutable approved snapshots through deterministic, idempotent write paths.
+Een normale native Hermes-plugininstallatie van deze **V2-repo** registreert eveneens alleen deze verbinding; die installeert de zelfstandige service of het aparte profiel niet. Gebruik de twee programma's hierboven voor de volledige automatische installatie.
+
+## Updates en gegevens
+
+Voer hetzelfde installatiecommando opnieuw uit om de laatste versie van `feature/v2` op te halen. Bestaande instellingen blijven behouden. Iedere codeversie krijgt een eigen map; de huidige versie wordt pas aangewezen nadat de service gezond is. Bij een mislukte start probeert de installer de vorige versie terug te starten. Ook een vast GitHub-commit of een tag is mogelijk via `--ref`.
+
+De Docker-volumes `timesheet-clerk-v2-state` en `timesheet-clerk-v2-runtime` horen uitsluitend bij Timesheet Clerk. De Compose-installatie van ATLAS kan deze niet via haar eigen `down` verwijderen. Bewaar de Timesheet Clerk-installatiemap en deze volumes; een algemene `docker volume prune` kan ongebruikte volumes van alle applicaties verwijderen.
+
+## Waar zit het model?
+
+```text
+Webpagina of Hermes-verbindingsplugin
+                 ↓
+Timesheet Clerk Python: brongegevens, context, verschillen en controles
+                 ↓ alleen voor koppelingsvoorstellen
+Eigen Hermes-profiel → ingestelde model-API
+                 ↓ alleen beslissingen
+Timesheet Clerk Python: validatie, planning, opslag en review
+                 ↓ na een boekingsactie in de webpagina
+Simplicate REST API → boekingsbewijs → controle door teruglezen
+```
+
+Het model kan geen uren boeken en krijgt geen Clockify- of Simplicate-sleutels. Python bepaalt bronintegriteit, weekindeling, tijden, samenvoeging, revisies, behoud van menselijke keuzes en boekingscontroles. Er is geen MCP-laag tussen Timesheet Clerk en Clockify/Simplicate. Zie [de V2-architectuur](docs/V2-ARCHITECTURE.md) voor de precieze codepaden en grenzen.
+
+## Ontwikkeling en controles
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt pytest
+PYTHONPATH=. .venv/bin/python -m pytest --rootdir=tests --import-mode=importlib -q tests
+```
+
+GitHub controleert daarnaast het echte Docker-image, de privé Hermes-toolketen met een lokale modeltest en het starten van Timesheet Clerk zonder ATLAS. Die tests doen geen live boekingen. Voor de definitieve migratie blijft een controle op je server met je eigen integraties nodig.

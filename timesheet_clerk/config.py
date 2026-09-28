@@ -2,7 +2,7 @@
 
 Secrets stay outside the repository. Hermes/plugin deployment supplies them as
 environment variables. Streamlit may run in a sibling container/process that
-shares Clerk state but not the planner profile environment; in that case we
+shares Timesheet Clerk state but not the planner profile environment; in that case we
 load only the known integration variables from the configured HERMES profile
 .env file. API-specific formatting belongs in the clients, never in the SKILL.
 """
@@ -37,6 +37,9 @@ def ensure_profile_integration_env(profile: str | None = None) -> None:
     Clockify/Simplicate integration keys are imported, never arbitrary profile
     settings or provider secrets.
     """
+    from .deployment import standalone, profile_home
+    if standalone():
+        return
     required_simplicate = (
         "SIMPLICATE_BASE_URL",
         "SIMPLICATE_API_KEY",
@@ -55,7 +58,7 @@ def ensure_profile_integration_env(profile: str | None = None) -> None:
 
     profile_env = Path(
         os.environ.get("HERMES_PROFILE_ENV")
-        or f"/home/hermes/.hermes/profiles/{profile}/.env"
+        or str(profile_home(profile)) + "/.env"
     )
     if not profile_env.is_file():
         return

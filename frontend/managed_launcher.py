@@ -13,16 +13,21 @@ from __future__ import annotations
 import os
 import subprocess
 import time
+import sys
 from pathlib import Path
 
-PLUGIN_DIR = Path(os.environ.get("TIMESHEET_CLERK_PLUGIN_DIR", "/home/hermes/.hermes/plugins/timesheet-clerk"))
-STATE_DIR = Path(os.environ.get("TIMESHEET_CLERK_STATE_DIR", "/home/hermes/.hermes/timesheet-clerk"))
+PLUGIN_DIR = Path(os.environ.get("TIMESHEET_CLERK_PLUGIN_DIR", str(Path(__file__).resolve().parents[1])))
+STATE_DIR = Path(os.environ.get("TIMESHEET_CLERK_STATE_DIR", "/data/clerk" if os.getenv("TIMESHEET_CLERK_MODE") == "standalone" else "/home/hermes/.hermes/timesheet-clerk"))
 PORT = os.environ.get("TIMESHEET_CLERK_UI_PORT", "8501")
 BASE_PATH = os.environ.get("TIMESHEET_CLERK_UI_BASE_PATH", "timesheet")
 RESTART_FILE = STATE_DIR / "frontend-restart.request"
 
 
 def command() -> list[str]:
+    if os.getenv("TIMESHEET_CLERK_MODE") == "standalone":
+        return [sys.executable, "-m", "streamlit", "run", "frontend/app.py",
+                "--server.address", "0.0.0.0", "--server.port", PORT,
+                "--server.baseUrlPath", BASE_PATH, "--browser.gatherUsageStats", "false"]
     return [
         "uv", "run",
         "--with", "streamlit",
@@ -37,6 +42,8 @@ def command() -> list[str]:
 
 def _reap_orphans() -> None:
     """Reap any exited children adopted by PID 1 without blocking."""
+    if os.getenv("TIMESHEET_CLERK_MODE") == "standalone":
+        return  # Docker's init process owns orphan reaping in V2.
     while True:
         try:
             pid, _status = os.waitpid(-1, os.WNOHANG)
