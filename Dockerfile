@@ -12,8 +12,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
     && rm -rf /var/lib/apt/lists/*
 RUN pip install --no-cache-dir uv==0.10.12
 RUN mkdir -p /opt/hermes \
-    && curl -fsSL "https://codeload.github.com/NousResearch/hermes-agent/tar.gz/${HERMES_REVISION}" \
-       | tar -xz --strip-components=1 -C /opt/hermes \
+    && curl --retry 5 --retry-delay 5 --retry-max-time 90 -fsSL \
+       "https://codeload.github.com/NousResearch/hermes-agent/tar.gz/${HERMES_REVISION}" -o /tmp/hermes.tar.gz \
+    && tar -xzf /tmp/hermes.tar.gz --strip-components=1 -C /opt/hermes \
+    && rm /tmp/hermes.tar.gz \
     && cd /opt/hermes && uv sync --locked --no-dev \
     && /opt/hermes/.venv/bin/hermes --help >/dev/null
 
